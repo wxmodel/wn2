@@ -1,0 +1,36 @@
+name: WeatherNext Auto-Runner
+
+on:
+  schedule:
+    # Runs at 4:00 AM and 4:00 PM UTC
+    - cron: '0 4,16 * * *'
+  workflow_dispatch: # Allows you to click "Run Now" manually
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Libraries
+        run: pip install earthengine-api geemap
+
+      - name: Run Map Generator
+        env:
+          EE_KEY: ${{ secrets.EE_KEY }}
+        run: python main.py
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
