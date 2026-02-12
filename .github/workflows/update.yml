@@ -2,9 +2,16 @@ name: WeatherNext Auto-Runner
 
 on:
   schedule:
-    # Runs at 4:00 AM and 4:00 PM UTC
-    - cron: '0 4,16 * * *'
-  workflow_dispatch: # Allows you to click "Run Now" manually
+    # Run 30 minutes after typical WN2 EE publish times
+    - cron: "0 2 * * *"   # after 18z cycle
+    - cron: "0 8 * * *"   # after 00z cycle
+    - cron: "0 14 * * *"  # after 06z cycle
+    - cron: "0 20 * * *"  # after 12z cycle
+  workflow_dispatch: {}
+  
+concurrency:
+  group: wn2-pages
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -14,15 +21,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
+          cache: "pip"
 
       - name: Install Libraries
-        run: pip install earthengine-api geemap
+        run: |
+          pip install --upgrade pip
+          pip install earthengine-api geemap
 
       - name: Run Map Generator
         env:
