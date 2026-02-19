@@ -324,21 +324,32 @@ def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg") -> None:
 # --- 4. EXECUTION ---
 cleanup_old_products()
 failures = []
+successful_exports = 0
 for h in HOURS:
     print(f'Generating Hour {h}...')
     try:
         img = get_hour_image(h)
         generate_z500_anomaly(img, h)
+        successful_exports += 1
     except Exception as e:
-        print(f'[{ts()}] Hour {h}: FAILED - {e}')
-        failures.append((h, str(e)))
+        err_msg = str(e)
+        print(f'[{ts()}] Hour {h}: FAILED - {err_msg}')
+        failures.append((h, err_msg))
+        if 'earthengine.thumbnails.create' in err_msg:
+            raise RuntimeError(
+                "Earth Engine permission denied: earthengine.thumbnails.create. "
+                "Grant the service account Earth Engine User (or Admin) on EE_PROJECT and ensure Earth Engine API is enabled."
+            ) from e
 
 if failures:
     print(f'[{ts()}] Completed with {len(failures)} failed hour(s).')
     for h, msg in failures:
         print(f'[{ts()}] Failure summary - hour {h}: {msg}')
 
-sanity_check_jpgs("public")
+if successful_exports > 0:
+    sanity_check_jpgs("public")
+else:
+    print(f'[{ts()}] Skipping sanity check: no z500a images were created.')
 
 
 # --- 5. BUILD INTERFACE ---
