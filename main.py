@@ -16,7 +16,10 @@ print('Local run: set $env:EE_PROJECT="snowcast-1" then python main.py')
 if not ee_project:
     raise ValueError('EE_PROJECT is required. PowerShell: $env:EE_PROJECT="snowcast-1"; python main.py')
 if key:
-    creds = ee.ServiceAccountCredentials(json.loads(key)['client_email'], key_data=key)
+    key_json = json.loads(key)
+    client_email = key_json.get('client_email')
+    print(f'EE_KEY client_email: {client_email}')
+    creds = ee.ServiceAccountCredentials(client_email, key_data=key)
     ee.Initialize(creds, project=ee_project)
 else:
     ee.Initialize(project=ee_project)  # Local fallback
