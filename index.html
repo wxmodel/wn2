@@ -1,0 +1,40 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WN2 Z500 Anomaly Viewer</title>
+    <style>
+        body { background:#222; color:#eee; font-family:sans-serif; text-align:center; }
+        img { max-width:100%; height:auto; border:1px solid #555; }
+        button { padding:10px 20px; font-size:16px; cursor:pointer; }
+    </style>
+</head>
+<body>
+    <h2>WeatherNext 2 Z500 Height Anomaly (NH): 202602190600_202602191200_0</h2>
+
+    <div>
+        <button onclick="change(-1)">Prev</button>
+        <span id="label" style="display:inline-block; width:80px; font-weight:bold;">Hour 00</span>
+        <button onclick="change(1)">Next</button>
+    </div>
+
+    <br>
+    <img id="map" src="z500a_000.jpg">
+
+    <script>
+        let hours = [0, 6, 12, 18, 24, 30, 36, 42, 48, 60, 72];
+        let idx = 0;
+
+        function update() {
+            let h = hours[idx].toString().padStart(3, '0');
+            document.getElementById('map').src = 'z500a_' + h + '.jpg';
+            document.getElementById('label').innerText = 'Hour ' + h;
+        }
+
+        function change(dir) {
+            idx = (idx + dir + hours.length) % hours.length;
+            update();
+        }
+    </script>
+</body>
+</html>
