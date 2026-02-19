@@ -1,0 +1,5 @@
+earthengine-api
+Pillow
+google-cloud-storage
+google-auth
+requests
