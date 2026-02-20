@@ -38,6 +38,8 @@ OUTPUT = 'public'  # The folder that becomes the website
 os.makedirs(OUTPUT, exist_ok=True)
 DEBUG_BANDS = os.environ.get('DEBUG_BANDS') == '1'
 TARGET_CRS = 'EPSG:4326'
+ANOMALY_DIMS = '1200x880'
+CONUS_DIMS = '1400x1000'
 
 # Regions
 NH_W = ee.Geometry.Rectangle([-180.0, 20.0, 0.0, 89.5], geodesic=False)
@@ -45,8 +47,8 @@ NH_E = ee.Geometry.Rectangle([0.0, 20.0, 180.0, 89.5], geodesic=False)
 NH_REGION = NH_W.union(NH_E, maxError=1)
 NA_REGION = ee.Geometry.Rectangle([-170.0, 10.0, -45.0, 80.0], geodesic=False)
 CONUS_REGION = ee.Geometry.Rectangle([-127.0, 22.0, -65.0, 50.0], geodesic=False)
-NH_THUMB_REGION = [-179.5, 20.0, 179.5, 85.0]
-NA_THUMB_REGION = [-170.0, 10.0, -45.0, 80.0]
+NH_THUMB_REGION = [-180.0, 8.0, 20.0, 88.0]
+NA_THUMB_REGION = [-170.0, 8.0, -40.0, 82.0]
 CONUS_THUMB_REGION = [-127.0, 22.0, -65.0, 50.0]
 
 # Boundaries overlays
@@ -167,6 +169,25 @@ print(f'[{ts()}] Fetched system:index in {time.time() - t0:.2f}s: {run_date}')
 print(f'Processing Run: {run_date}')
 print(f'Latest start_time: {latest_start_time}')
 
+
+def parse_run_init_utc(ts_utc):
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(ts_utc, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
+RUN_INIT_UTC = parse_run_init_utc(latest_start_time)
+
+
+def format_map_times(hour):
+    valid_utc = RUN_INIT_UTC + timedelta(hours=hour)
+    init_text = RUN_INIT_UTC.strftime('%H00 UTC %a %d %b %Y')
+    valid_text = valid_utc.strftime('%H00 UTC %a %d %b %Y')
+    return init_text, valid_text
+
 if DEBUG_BANDS:
     print(f'[{ts()}] Fetching bandNames...')
     t0 = time.time()
@@ -227,6 +248,76 @@ def pseudo_z500_anomaly_m(height_dam, radius_px=24):
     return height_dam.subtract(broad).multiply(10)
 
 
+def shrink_dimensions(dimensions):
+    if isinstance(dimensions, int):
+        return max(500, int(dimensions * 0.7))
+    if isinstance(dimensions, str) and 'x' in dimensions:
+        w_str, h_str = dimensions.lower().split('x', 1)
+        try:
+            w = int(w_str)
+            h = int(h_str)
+            return f'{max(500, int(w * 0.7))}x{max(400, int(h * 0.7))}'
+        except ValueError:
+            return dimensions
+    return dimensions
+
+
+def load_font(size, bold=False):
+    from PIL import ImageFont
+
+    candidates = []
+    if bold:
+        candidates.extend([
+            'DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            'arialbd.ttf',
+        ])
+    else:
+        candidates.extend([
+            'DejaVuSans.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            'arial.ttf',
+        ])
+    for font_name in candidates:
+        try:
+            return ImageFont.truetype(font_name, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def annotate_map_file(out_file, product_key, hour):
+    from PIL import Image, ImageDraw
+
+    product_titles = {
+        'nh_z500a': 'WN2 0.25° | 500-hPa Geopotential Height (dam) & Anomaly (m) | Northern Hemisphere',
+        'na_z500a': 'WN2 0.25° | 500-hPa Geopotential Height (dam) & Anomaly (m) | North America',
+        'conus_mslp_ptype': 'WN2 0.25° | MSLP (hPa) + 500-hPa Height (dam) + Precip Type | CONUS',
+        'conus_vort500': 'WN2 0.25° | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
+    }
+    title = product_titles.get(product_key, product_key)
+    init_text, valid_text = format_map_times(hour)
+    subtitle = f'Init: {init_text} | Hour: [{hour:03d}] | Valid: {valid_text}'
+
+    with Image.open(out_file) as src:
+        img = src.convert('RGB')
+        header_h = 78
+        footer_h = 20
+        canvas = Image.new('RGB', (img.width, img.height + header_h + footer_h), color=(236, 236, 236))
+        canvas.paste(img, (0, header_h))
+        draw = ImageDraw.Draw(canvas)
+        title_font = load_font(30 if img.width >= 1300 else 26, bold=True)
+        subtitle_font = load_font(22 if img.width >= 1300 else 19, bold=False)
+        footer_font = load_font(15 if img.width >= 1300 else 13, bold=False)
+
+        draw.text((12, 10), title, fill=(20, 20, 20), font=title_font)
+        draw.text((12, 44), subtitle, fill=(25, 25, 25), font=subtitle_font)
+        footer_text = f'Run: {run_date} | Source: WeatherNext2 (Earth Engine)'
+        draw.text((12, img.height + header_h + 2), footer_text, fill=(35, 35, 35), font=footer_font)
+        draw.rectangle((0, header_h, img.width - 1, header_h + img.height - 1), outline=(32, 32, 32), width=2)
+        canvas.save(out_file, format='JPEG', quality=95)
+
+
 def export_composite(composite, out_file, region, dimensions=1600, scale=None):
     print(f'[{ts()}] Exporting {out_file}...')
     t0 = time.time()
@@ -251,7 +342,7 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None):
             if scale is not None:
                 retry_params['scale'] = int(scale * 1.4)
             else:
-                retry_params['dimensions'] = max(500, int(dimensions * 0.7))
+                retry_params['dimensions'] = shrink_dimensions(dimensions)
             download_thumb(composite, out_file, retry_params)
         else:
             raise
@@ -290,13 +381,14 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     composite = ee.ImageCollection(overlays).mosaic()
 
     out_file = f'{OUTPUT}/{prefix}_{h:03d}.jpg'
-    map_dims = '1200x760' if prefix == 'nh_z500a' else '1200x780'
+    map_dims = ANOMALY_DIMS
     export_composite(
         composite,
         out_file,
         region,
         dimensions=map_dims,
     )
+    annotate_map_file(out_file, prefix, h)
 
 
 def generate_mslp_ptype_map(img, h):
@@ -356,7 +448,9 @@ def generate_mslp_ptype_map(img, h):
         border_overlay(include_states=True),
     ]).mosaic()
 
-    export_composite(composite, f'{OUTPUT}/conus_mslp_ptype_{h:03d}.jpg', CONUS_THUMB_REGION, dimensions=1600)
+    out_file = f'{OUTPUT}/conus_mslp_ptype_{h:03d}.jpg'
+    export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=CONUS_DIMS)
+    annotate_map_file(out_file, 'conus_mslp_ptype', h)
 
 
 def generate_vort500_map(img, h):
@@ -393,7 +487,9 @@ def generate_vort500_map(img, h):
         border_overlay(include_states=True),
     ]).mosaic()
 
-    export_composite(composite, f'{OUTPUT}/conus_vort500_{h:03d}.jpg', CONUS_THUMB_REGION, dimensions=1600)
+    out_file = f'{OUTPUT}/conus_vort500_{h:03d}.jpg'
+    export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=CONUS_DIMS)
+    annotate_map_file(out_file, 'conus_vort500', h)
 
 
 def _file_md5(p: Path) -> str:
