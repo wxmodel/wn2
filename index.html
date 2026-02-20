@@ -2,24 +2,34 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>WN2 Z500 Anomaly Viewer</title>
+    <title>WN2 Multi-Product Viewer</title>
     <style>
-        body { background:#222; color:#eee; font-family:sans-serif; text-align:center; }
-        img { max-width:100%; height:auto; border:1px solid #555; }
+        body { background:#1f1f1f; color:#efefef; font-family:system-ui, sans-serif; text-align:center; margin:0; }
+        .wrap { max-width:1200px; margin:0 auto; padding:18px; }
+        img { max-width:100%; height:auto; border:1px solid #4f4f4f; background:#111; }
         button { padding:10px 20px; font-size:16px; cursor:pointer; }
+        select { padding:8px 10px; font-size:15px; }
+        .controls { display:flex; gap:12px; justify-content:center; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
     </style>
 </head>
 <body>
-    <h2>WeatherNext 2 Z500 Height Anomaly (NH): 202602200600_202602201200_0</h2>
+    <div class="wrap">
+    <h2>WeatherNext 2 Map Viewer: 202602201200_202602201800_0</h2>
 
-    <div>
+    <div class="controls">
+        <label for="product">Map:</label>
+        <select id="product" onchange="update()">
+            <option value="nh_z500a">NH 500mb Height Anomaly</option>
+            <option value="na_z500a">North America 500mb Height Anomaly</option>
+            <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
+            <option value="conus_vort500">CONUS 500mb Vorticity</option>
+        </select>
         <button onclick="change(-1)">Prev</button>
-        <span id="label" style="display:inline-block; width:80px; font-weight:bold;">Hour 00</span>
+        <span id="label" style="display:inline-block; width:120px; font-weight:bold;">Hour 000</span>
         <button onclick="change(1)">Next</button>
     </div>
 
-    <br>
-    <img id="map" src="z500a_000.jpg">
+    <img id="map" src="nh_z500a_000.jpg">
 
     <script>
         let hours = [0, 6, 12, 18, 24, 30, 36, 42, 48, 60, 72];
@@ -27,7 +37,8 @@
 
         function update() {
             let h = hours[idx].toString().padStart(3, '0');
-            document.getElementById('map').src = 'z500a_' + h + '.jpg';
+            let product = document.getElementById('product').value;
+            document.getElementById('map').src = product + '_' + h + '.jpg';
             document.getElementById('label').innerText = 'Hour ' + h;
         }
 
@@ -36,5 +47,6 @@
             update();
         }
     </script>
+    </div>
 </body>
 </html>
