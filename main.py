@@ -4,6 +4,7 @@ import json
 import time
 import glob
 import hashlib
+import math
 import requests
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -40,6 +41,11 @@ DEBUG_BANDS = os.environ.get('DEBUG_BANDS') == '1'
 TARGET_CRS = 'EPSG:4326'
 ANOMALY_DIMS = '1200x880'
 CONUS_DIMS = '1400x1000'
+NH_SOURCE_REGION = [-179.5, 20.0, 179.5, 89.0]
+NH_SOURCE_DIMS = '2200x440'
+NH_POLAR_DIMS = 1080
+NH_W_BOUNDS = [-180.0, 20.0, 0.0, 89.0]
+NH_E_BOUNDS = [0.0, 20.0, 180.0, 89.0]
 
 # Regions
 NH_W = ee.Geometry.Rectangle([-180.0, 20.0, 0.0, 89.5], geodesic=False)
@@ -47,6 +53,7 @@ NH_E = ee.Geometry.Rectangle([0.0, 20.0, 180.0, 89.5], geodesic=False)
 NH_REGION = NH_W.union(NH_E, maxError=1)
 NA_REGION = ee.Geometry.Rectangle([-170.0, 10.0, -45.0, 80.0], geodesic=False)
 CONUS_REGION = ee.Geometry.Rectangle([-127.0, 22.0, -65.0, 50.0], geodesic=False)
+WORLD_REGION = ee.Geometry.Rectangle([-180.0, -89.9, 180.0, 89.9], geodesic=False)
 NH_THUMB_REGION = [-180.0, 8.0, 20.0, 88.0]
 NA_THUMB_REGION = [-170.0, 8.0, -40.0, 82.0]
 CONUS_THUMB_REGION = [-127.0, 22.0, -65.0, 50.0]
@@ -318,15 +325,89 @@ def annotate_map_file(out_file, product_key, hour):
         canvas.save(out_file, format='JPEG', quality=95)
 
 
-def export_composite(composite, out_file, region, dimensions=1600, scale=None):
+def remap_nh_to_polar(out_file, lon0=-100.0, lat_min=20.0, lat_max=89.0):
+    from PIL import Image, ImageDraw
+
+    with Image.open(out_file) as src:
+        src_img = src.convert('RGB')
+    sw, sh = src_img.size
+    src_px = src_img.load()
+
+    out_size = NH_POLAR_DIMS
+    out_img = Image.new('RGB', (out_size, out_size), color=(214, 214, 214))
+    out_px = out_img.load()
+
+    cx = (out_size - 1) / 2.0
+    cy = (out_size - 1) / 2.0
+    radius = out_size * 0.48
+
+    for y in range(out_size):
+        dy = (y - cy) / radius
+        for x in range(out_size):
+            dx = (x - cx) / radius
+            r = math.hypot(dx, dy)
+            if r > 1.0:
+                continue
+
+            lat = 90.0 - r * (90.0 - lat_min)
+            lon = lon0 + math.degrees(math.atan2(dx, -dy))
+            lon = ((lon + 180.0) % 360.0) - 180.0
+
+            sx = int(round((lon + 180.0) / 360.0 * (sw - 1)))
+            sy = int(round((lat_max - lat) / (lat_max - lat_min) * (sh - 1)))
+            if sy < 0:
+                sy = 0
+            elif sy >= sh:
+                sy = sh - 1
+
+            out_px[x, y] = src_px[sx, sy]
+
+    draw = ImageDraw.Draw(out_img)
+    for lat_line in [30, 40, 50, 60, 70, 80]:
+        rr = (90.0 - lat_line) / (90.0 - lat_min) * radius
+        draw.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), outline=(120, 120, 120), width=1)
+    for lon_deg in range(0, 360, 30):
+        ang = math.radians(lon_deg)
+        x2 = cx + radius * math.sin(ang)
+        y2 = cy - radius * math.cos(ang)
+        draw.line((cx, cy, x2, y2), fill=(120, 120, 120), width=1)
+    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(35, 35, 35), width=3)
+
+    out_img.save(out_file, format='JPEG', quality=95)
+
+
+def stitch_horizontal(left_file, right_file, out_file):
+    from PIL import Image
+
+    with Image.open(left_file) as left_src:
+        left = left_src.convert('RGB')
+    with Image.open(right_file) as right_src:
+        right = right_src.convert('RGB')
+
+    height = min(left.height, right.height)
+    if left.height != height:
+        left = left.resize((left.width, height))
+    if right.height != height:
+        right = right.resize((right.width, height))
+
+    stitched = Image.new('RGB', (left.width + right.width, height))
+    stitched.paste(left, (0, 0))
+    stitched.paste(right, (left.width, 0))
+    stitched.save(out_file, format='JPEG', quality=95)
+
+
+def export_composite(composite, out_file, region, dimensions=1600, scale=None, crs=None):
     print(f'[{ts()}] Exporting {out_file}...')
     t0 = time.time()
     params = {
         'region': region,
         'format': 'jpg',
     }
-    if scale is not None:
+    if crs is not None:
+        params['crs'] = crs
+    elif scale is not None:
         params['crs'] = TARGET_CRS
+    if scale is not None:
         params['scale'] = scale
     else:
         params['dimensions'] = dimensions
@@ -350,16 +431,23 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None):
 
 
 def generate_z500_anomaly_map(img, h, region, prefix):
-    region_geom = ee.Geometry.Rectangle(region, geodesic=False)
+    if prefix == 'nh_z500a':
+        region_geom = WORLD_REGION
+        export_region = NH_SOURCE_REGION
+        export_crs = None
+        map_dims = NH_SOURCE_DIMS
+    else:
+        region_geom = ee.Geometry.Rectangle(region, geodesic=False)
+        export_region = region
+        export_crs = None
+        map_dims = ANOMALY_DIMS
+
     anomaly_radius = 30 if prefix == 'nh_z500a' else 20
     anomaly_min = -100 if prefix == 'nh_z500a' else -100
     anomaly_max = 100 if prefix == 'nh_z500a' else 100
-    forecast_height_dam = (
-        img.select(WN2_Z500_BAND)
-        .divide(9.80665)
-        .divide(10)
-        .clip(region_geom)
-    )
+    forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10)
+    if prefix != 'nh_z500a':
+        forecast_height_dam = forecast_height_dam.clip(region_geom)
     anomaly_m = pseudo_z500_anomaly_m(forecast_height_dam, radius_px=anomaly_radius)
 
     anomaly_layer = anomaly_m.visualize(
@@ -381,12 +469,24 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     composite = ee.ImageCollection(overlays).mosaic()
 
     out_file = f'{OUTPUT}/{prefix}_{h:03d}.jpg'
-    map_dims = ANOMALY_DIMS
+    if prefix == 'nh_z500a':
+        west_file = f'{OUTPUT}/_tmp_nh_w_{h:03d}.jpg'
+        east_file = f'{OUTPUT}/_tmp_nh_e_{h:03d}.jpg'
+        export_composite(composite.clip(NH_W), west_file, NH_W_BOUNDS, dimensions='1100x440')
+        export_composite(composite.clip(NH_E), east_file, NH_E_BOUNDS, dimensions='1100x440')
+        stitch_horizontal(west_file, east_file, out_file)
+        os.remove(west_file)
+        os.remove(east_file)
+        remap_nh_to_polar(out_file)
+        annotate_map_file(out_file, prefix, h)
+        return
+
     export_composite(
         composite,
         out_file,
-        region,
+        export_region,
         dimensions=map_dims,
+        crs=export_crs,
     )
     annotate_map_file(out_file, prefix, h)
 
