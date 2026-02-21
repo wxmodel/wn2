@@ -531,6 +531,17 @@ def _text_size(draw, text, font):
     return (bbox[2] - bbox[0], bbox[3] - bbox[1])
 
 
+def _fit_font(draw, text, start_size, min_size, bold=False, max_width=1000):
+    size = start_size
+    while size >= min_size:
+        font = load_font(size, bold=bold)
+        tw, _ = _text_size(draw, text, font)
+        if tw <= max_width:
+            return font
+        size -= 1
+    return load_font(min_size, bold=bold)
+
+
 def _format_tick_label(value):
     if isinstance(value, (int, float)) and value != 0 and abs(value) < 1:
         s = f'{value:g}'
@@ -672,6 +683,23 @@ def annotate_map_file(out_file, product_key, hour):
         title_font = load_font(30 if img.width >= 1300 else 26, bold=True)
         subtitle_font = load_font(22 if img.width >= 1300 else 19, bold=False)
         footer_font = load_font(15 if img.width >= 1300 else 13, bold=False)
+        max_text_w = img.width - 24
+        title_font = _fit_font(
+            draw,
+            title,
+            start_size=(30 if img.width >= 1300 else 26),
+            min_size=(18 if img.width >= 1300 else 16),
+            bold=True,
+            max_width=max_text_w,
+        )
+        subtitle_font = _fit_font(
+            draw,
+            subtitle,
+            start_size=(22 if img.width >= 1300 else 19),
+            min_size=(14 if img.width >= 1300 else 13),
+            bold=False,
+            max_width=max_text_w,
+        )
 
         draw.text((12, 10), title, fill=(20, 20, 20), font=title_font)
         draw.text((12, 44), subtitle, fill=(25, 25, 25), font=subtitle_font)
