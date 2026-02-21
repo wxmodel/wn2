@@ -3,50 +3,148 @@
 <html>
 <head>
     <title>WN2 Multi-Product Viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { background:#1f1f1f; color:#efefef; font-family:system-ui, sans-serif; text-align:center; margin:0; }
-        .wrap { max-width:1200px; margin:0 auto; padding:18px; }
-        img { max-width:100%; height:auto; border:1px solid #4f4f4f; background:#111; }
-        button { padding:10px 20px; font-size:16px; cursor:pointer; }
-        select { padding:8px 10px; font-size:15px; }
-        .controls { display:flex; gap:12px; justify-content:center; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+        body {
+            background:#1f1f1f;
+            color:#efefef;
+            font-family:system-ui, sans-serif;
+            text-align:center;
+            margin:0;
+            padding-bottom:136px;
+        }
+        .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 18px; }
+        .map-wrap { background:#111; border:1px solid #4f4f4f; }
+        img { width:100%; height:auto; display:block; background:#111; }
+        button {
+            padding:10px 16px;
+            font-size:16px;
+            cursor:pointer;
+            border:1px solid #666;
+            background:#2d2d2d;
+            color:#f1f1f1;
+            border-radius:8px;
+        }
+        select {
+            padding:8px 10px;
+            font-size:15px;
+            border-radius:8px;
+            border:1px solid #666;
+            background:#2a2a2a;
+            color:#f1f1f1;
+        }
+        #label {
+            display:inline-block;
+            min-width:120px;
+            font-weight:700;
+            letter-spacing:0.03em;
+        }
+        .bottom-controls {
+            position:fixed;
+            left:0;
+            right:0;
+            bottom:0;
+            background:#141414;
+            border-top:1px solid #3c3c3c;
+            padding:10px 10px 12px;
+            box-shadow:0 -6px 16px rgba(0, 0, 0, 0.35);
+        }
+        .row {
+            max-width:1240px;
+            margin:0 auto;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            flex-wrap:wrap;
+            gap:10px;
+        }
+        #hourSlider {
+            width:min(960px, 94vw);
+            height:34px;
+            touch-action:pan-x;
+        }
+        @media (max-width: 760px) {
+            h2 { font-size:20px; margin:10px 0; }
+            button { font-size:14px; padding:8px 12px; }
+            select { font-size:14px; }
+            #label { min-width:86px; }
+            body { padding-bottom:160px; }
+        }
     </style>
 </head>
 <body>
     <div class="wrap">
-    <h2>WeatherNext 2 Map Viewer: 202602211200_202602211800_0</h2>
-
-    <div class="controls">
-        <label for="product">Map:</label>
-        <select id="product" onchange="update()">
-            <option value="nh_z500a">NH 500mb Height Anomaly</option>
-            <option value="na_z500a">North America 500mb Height Anomaly</option>
-            <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
-            <option value="conus_vort500">CONUS 500mb Vorticity</option>
-        </select>
-        <button onclick="change(-1)">Prev</button>
-        <span id="label" style="display:inline-block; width:120px; font-weight:bold;">Hour 000</span>
-        <button onclick="change(1)">Next</button>
+        <h2>WeatherNext 2 Map Viewer: 202602211200_202602211800_0</h2>
+        <div class="map-wrap">
+            <img id="map" src="" alt="WN2 map">
+        </div>
     </div>
 
-    <img id="map" src="nh_z500a_000.jpg">
+    <div class="bottom-controls">
+        <div class="row">
+            <label for="product">Map:</label>
+            <select id="product">
+                <option value="nh_z500a">NH 500mb Height Anomaly</option>
+                <option value="na_z500a">North America 500mb Height Anomaly</option>
+                <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
+                <option value="conus_vort500">CONUS 500mb Vorticity</option>
+                <option value="conus_snow_accum">CONUS Snowfall Accumulation</option>
+            </select>
+            <button id="prevBtn">Prev</button>
+            <span id="label">Hour ---</span>
+            <button id="nextBtn">Next</button>
+        </div>
+        <div class="row" style="margin-top:6px;">
+            <input type="range" id="hourSlider" min="0" max="0" step="1" value="0">
+        </div>
+    </div>
 
     <script>
-        let hours = [60];
+        const hours = [54];
         let idx = 0;
 
-        function update() {
-            let h = hours[idx].toString().padStart(3, '0');
-            let product = document.getElementById('product').value;
-            document.getElementById('map').src = product + '_' + h + '.jpg';
-            document.getElementById('label').innerText = 'Hour ' + h;
+        const mapEl = document.getElementById('map');
+        const labelEl = document.getElementById('label');
+        const productEl = document.getElementById('product');
+        const sliderEl = document.getElementById('hourSlider');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+
+        function render() {
+            if (!hours.length) {
+                mapEl.src = '';
+                labelEl.innerText = 'No hours';
+                return;
+            }
+            const hour = hours[idx];
+            const hourStr = hour.toString().padStart(3, '0');
+            const product = productEl.value;
+            mapEl.src = `${product}_${hourStr}.jpg`;
+            labelEl.innerText = `Hour ${hourStr}`;
         }
 
         function change(dir) {
+            if (!hours.length) return;
             idx = (idx + dir + hours.length) % hours.length;
-            update();
+            sliderEl.value = String(idx);
+            render();
+        }
+
+        sliderEl.addEventListener('input', () => {
+            idx = Number(sliderEl.value);
+            render();
+        });
+        productEl.addEventListener('change', render);
+        prevBtn.addEventListener('click', () => change(-1));
+        nextBtn.addEventListener('click', () => change(1));
+
+        if (hours.length > 0) {
+            sliderEl.max = String(hours.length - 1);
+            sliderEl.value = '0';
+            render();
+        } else {
+            render();
         }
     </script>
-    </div>
 </body>
 </html>
