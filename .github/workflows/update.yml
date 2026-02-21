@@ -53,6 +53,8 @@ jobs:
           HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || '' }}
           HOURS_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '' }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
+          FAST_RENDER: ${{ github.event_name == 'schedule' && '1' || '' }}
+          EXPORT_WORKERS: ${{ github.event_name == 'schedule' && '2' || '2' }}
         run: python main.py
 
       - name: Deploy to GitHub Pages

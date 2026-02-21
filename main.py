@@ -6,6 +6,7 @@ import glob
 import hashlib
 import math
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -39,13 +40,13 @@ OUTPUT = 'public'  # The folder that becomes the website
 os.makedirs(OUTPUT, exist_ok=True)
 DEBUG_BANDS = os.environ.get('DEBUG_BANDS') == '1'
 TARGET_CRS = 'EPSG:4326'
-ANOMALY_DIMS = '1200x880'
-CONUS_DIMS = '1400x1000'
 NH_SOURCE_REGION = [-179.5, 20.0, 179.5, 89.0]
-NH_SOURCE_DIMS = '2200x440'
-NH_POLAR_DIMS = 1080
 NH_W_BOUNDS = [-180.0, 20.0, 0.0, 89.0]
 NH_E_BOUNDS = [0.0, 20.0, 180.0, 89.0]
+try:
+    NH_LON0 = float(os.environ.get('NH_LON0', '80.0'))
+except ValueError:
+    NH_LON0 = 80.0
 
 # Regions
 NH_W = ee.Geometry.Rectangle([-180.0, 20.0, 0.0, 89.5], geodesic=False)
@@ -71,6 +72,54 @@ hours_csv = os.environ.get('HOURS_CSV')
 hours_step_env = os.environ.get('HOURS_STEP')
 hours_max_env = os.environ.get('HOURS_MAX')
 hours_limit_env = os.environ.get('HOURS_LIMIT')
+event_name = (os.environ.get('GITHUB_EVENT_NAME') or '').lower()
+fast_render_env = os.environ.get('FAST_RENDER')
+
+
+def _env_flag(raw, default=False):
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+FAST_RENDER = _env_flag(fast_render_env, default=(event_name == 'schedule'))
+if FAST_RENDER:
+    ANOMALY_DIMS = '980x720'
+    CONUS_DIMS = '1200x860'
+    NH_SOURCE_DIMS = '1800x360'
+    NH_POLAR_DIMS = 920
+else:
+    ANOMALY_DIMS = '1200x880'
+    CONUS_DIMS = '1400x1000'
+    NH_SOURCE_DIMS = '2200x440'
+    NH_POLAR_DIMS = 1080
+
+workers_env = os.environ.get('EXPORT_WORKERS')
+try:
+    EXPORT_WORKERS = int(workers_env) if workers_env else (2 if FAST_RENDER else 2)
+except ValueError:
+    EXPORT_WORKERS = 2
+EXPORT_WORKERS = max(1, min(4, EXPORT_WORKERS))
+print(f'[{ts()}] Render profile: fast={FAST_RENDER}, workers={EXPORT_WORKERS}, dims={ANOMALY_DIMS}/{CONUS_DIMS}.')
+
+ANOMALY_PALETTE = [
+    '#6a00a8', '#9c4dcc', '#5e60ce', '#2f80ed', '#7dcfff',
+    '#f7f7f7',
+    '#ffe08a', '#ffad5a', '#ff6b3a', '#d7301f', '#7f0000'
+]
+VORTICITY_PALETTE = ['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f']
+RAIN_RATE_PALETTE = ['#a9ee80', '#7ad35a', '#4eb744', '#2f9637', '#f7ea00', '#ffbf00', '#ff8a00', '#ff4200', '#b70000', '#c21cff']
+SNOW_RATE_PALETTE = ['#e9f7ff', '#c7ebff', '#9edcff', '#67c2f3', '#368fcb', '#1d64a4', '#0f3f80', '#4a148c']
+FRZR_RATE_PALETTE = ['#ffe5ef', '#ffc4da', '#f78fb9', '#f06292', '#d81b60', '#ad1457', '#880e4f']
+SLEET_RATE_PALETTE = ['#f0d9ff', '#e1bee7', '#ce93d8', '#ab47bc', '#8e24aa', '#6a1b9a']
+SNOW_ACCUM_PALETTE = [
+    '#6f6f6f', '#9a9a9a', '#c9c9c9',
+    '#d8f3ff', '#bfe8ff', '#9ed8ff', '#77beff', '#519fef', '#2f7fda',
+    '#215fcb', '#1f46bb',
+    '#3d1ca8', '#5b12ad', '#7b0cae',
+    '#990da8', '#b510a3', '#ce1f9f',
+    '#e639a7', '#f06bbd', '#f89ad3', '#fbc1e3'
+]
 
 
 def cleanup_old_products():
@@ -80,6 +129,7 @@ def cleanup_old_products():
         'na_z500a_*.jpg',
         'conus_mslp_ptype_*.jpg',
         'conus_vort500_*.jpg',
+        'conus_snow_accum_*.jpg',
     ]
     removed = 0
     for pattern in stale_patterns:
@@ -105,24 +155,41 @@ def clip_to_nh(image):
 def download_thumb(ee_image, out_path, vis_params):
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     url = ee_image.getThumbURL(vis_params)
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            with requests.get(url, stream=True, timeout=300) as response:
+                if response.status_code != 200:
+                    body = response.text[:500]
+                    print(f'[{ts()}] Thumbnail download failed: status={response.status_code}, body={body}')
+                    raise requests.HTTPError(
+                        f'Thumbnail download failed with status {response.status_code}: {body}',
+                        response=response
+                    )
 
-    try:
-        with requests.get(url, stream=True, timeout=300) as response:
-            if response.status_code != 200:
-                body = response.text[:500]
-                print(f'[{ts()}] Thumbnail download failed: status={response.status_code}, body={body}')
-                raise requests.HTTPError(
-                    f'Thumbnail download failed with status {response.status_code}: {body}',
-                    response=response
-                )
-
-            with open(out_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-    except Exception as e:
-        print(f'[{ts()}] Thumbnail download error for {out_path}: {e}')
-        raise
+                with open(out_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            return
+        except Exception as e:
+            last_error = e
+            msg = str(e)
+            transient = (
+                isinstance(e, (requests.ConnectionError, requests.Timeout))
+                or 'RemoteDisconnected' in msg
+                or 'Connection aborted' in msg
+                or 'Read timed out' in msg
+            )
+            if transient and attempt < 3:
+                wait_s = attempt * 3
+                print(f'[{ts()}] Retry {attempt}/2 for {out_path} after transient error: {msg}')
+                time.sleep(wait_s)
+                continue
+            print(f'[{ts()}] Thumbnail download error for {out_path}: {e}')
+            raise
+    if last_error is not None:
+        raise last_error
 
 
 def get_latest_start_time_recent(ic, days=7):
@@ -354,6 +421,18 @@ def shrink_dimensions(dimensions):
     return dimensions
 
 
+def split_nh_dimensions(source_dims):
+    if isinstance(source_dims, str) and 'x' in source_dims:
+        w_str, h_str = source_dims.lower().split('x', 1)
+        try:
+            w = int(w_str)
+            h = int(h_str)
+            return f'{max(420, w // 2)}x{max(280, h)}'
+        except ValueError:
+            return '1100x440'
+    return '1100x440'
+
+
 def load_font(size, bold=False):
     from PIL import ImageFont
 
@@ -378,14 +457,210 @@ def load_font(size, bold=False):
     return ImageFont.load_default()
 
 
+def _hex_to_rgb(color_hex):
+    color_hex = color_hex.strip().lstrip('#')
+    if len(color_hex) != 6:
+        return (0, 0, 0)
+    return tuple(int(color_hex[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _interp_palette_color(palette, t):
+    if not palette:
+        return (0, 0, 0)
+    if len(palette) == 1:
+        return _hex_to_rgb(palette[0])
+    t = max(0.0, min(1.0, t))
+    pos = t * (len(palette) - 1)
+    idx = int(math.floor(pos))
+    frac = pos - idx
+    if idx >= len(palette) - 1:
+        return _hex_to_rgb(palette[-1])
+    c0 = _hex_to_rgb(palette[idx])
+    c1 = _hex_to_rgb(palette[idx + 1])
+    return (
+        int(round(c0[0] + (c1[0] - c0[0]) * frac)),
+        int(round(c0[1] + (c1[1] - c0[1]) * frac)),
+        int(round(c0[2] + (c1[2] - c0[2]) * frac)),
+    )
+
+
+def _draw_gradient_bar(draw, x, y, w, h, palette):
+    if w < 2 or h < 2:
+        return
+    for i in range(w):
+        frac = i / float(max(1, w - 1))
+        draw.line([(x + i, y), (x + i, y + h)], fill=_interp_palette_color(palette, frac), width=1)
+    draw.rectangle((x, y, x + w, y + h), outline=(50, 50, 50), width=1)
+
+
+def _draw_tapered_gradient_bar(draw, x, y, w, h, palette):
+    taper = max(8, min(18, w // 12))
+    inner_x = x + taper
+    inner_w = max(4, w - 2 * taper)
+    for i in range(inner_w):
+        frac = i / float(max(1, inner_w - 1))
+        draw.line([(inner_x + i, y), (inner_x + i, y + h)], fill=_interp_palette_color(palette, frac), width=1)
+    for i in range(taper):
+        frac = i / float(max(1, taper - 1))
+        color_l = _interp_palette_color(palette, 0.0)
+        color_r = _interp_palette_color(palette, 1.0)
+        yy0 = y + int(round(h * 0.5 * frac))
+        yy1 = y + h - int(round(h * 0.5 * frac))
+        draw.line((x + i, yy0, x + i, yy1), fill=color_l, width=1)
+        draw.line((x + w - 1 - i, yy0, x + w - 1 - i, yy1), fill=color_r, width=1)
+    draw.rectangle((x, y, x + w, y + h), outline=(50, 50, 50), width=1)
+
+
+def _text_size(draw, text, font):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return (bbox[2] - bbox[0], bbox[3] - bbox[1])
+
+
+def _format_tick_label(value):
+    if isinstance(value, (int, float)) and value != 0 and abs(value) < 1:
+        s = f'{value:g}'
+        if s.startswith('-0'):
+            return '-' + s[2:]
+        if s.startswith('0'):
+            return s[1:]
+        return s
+    return f'{value:g}'
+
+
+def _draw_ticks(draw, x, y, w, h, values, vmin, vmax, font):
+    if vmax <= vmin:
+        return
+    for value in values:
+        frac = (value - vmin) / float(vmax - vmin)
+        if frac < 0 or frac > 1:
+            continue
+        tx = int(round(x + frac * w))
+        draw.line((tx, y + h, tx, y + h + 5), fill=(40, 40, 40), width=1)
+        label = _format_tick_label(value)
+        tw, _ = _text_size(draw, label, font)
+        draw.text((tx - tw // 2, y + h + 7), label, fill=(30, 30, 30), font=font)
+
+
+def _draw_panel(draw, x0, y0, x1, y1, fill=(242, 242, 242), outline=(120, 120, 120), radius=10):
+    draw.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=fill, outline=outline, width=2)
+
+
+def _add_northeast_inset(canvas, map_img, header_h):
+    from PIL import Image, ImageDraw
+
+    lon_min, lat_min, lon_max, lat_max = CONUS_THUMB_REGION
+
+    def lonlat_to_xy(lon, lat):
+        xf = (lon - lon_min) / float(lon_max - lon_min)
+        yf = (lat_max - lat) / float(lat_max - lat_min)
+        x = int(round(xf * (map_img.width - 1)))
+        y = int(round(yf * (map_img.height - 1)))
+        return x, y
+
+    west, east = -86.0, -62.0
+    south, north = 35.0, 49.5
+    x0, y0 = lonlat_to_xy(west, north)
+    x1, y1 = lonlat_to_xy(east, south)
+    x0 = max(0, min(map_img.width - 2, x0))
+    y0 = max(0, min(map_img.height - 2, y0))
+    x1 = max(x0 + 2, min(map_img.width - 1, x1))
+    y1 = max(y0 + 2, min(map_img.height - 1, y1))
+
+    crop = map_img.crop((x0, y0, x1, y1))
+    inset_w = int(map_img.width * (0.29 if map_img.width >= 1300 else 0.34))
+    inset_h = max(150, int(inset_w * crop.height / max(1, crop.width)))
+    inset = crop.resize((inset_w, inset_h), resample=Image.Resampling.BILINEAR)
+
+    px = map_img.width - inset_w - 16
+    py = int(map_img.height * 0.06)
+    panel_pad = 8
+
+    draw = ImageDraw.Draw(canvas)
+    panel_x0 = px - panel_pad
+    panel_y0 = header_h + py - panel_pad
+    panel_x1 = px + inset_w + panel_pad
+    panel_y1 = header_h + py + inset_h + panel_pad + 28
+    _draw_panel(draw, panel_x0, panel_y0, panel_x1, panel_y1, fill=(236, 236, 236), outline=(70, 70, 70), radius=8)
+
+    canvas.paste(inset, (px, header_h + py))
+    draw.rectangle((px, header_h + py, px + inset_w, header_h + py + inset_h), outline=(18, 18, 18), width=2)
+    label_font = load_font(18, bold=True)
+    draw.rectangle((px, header_h + py + inset_h + 2, px + inset_w, header_h + py + inset_h + 27), fill=(228, 228, 228), outline=(80, 80, 80), width=1)
+    draw.text((px + 8, header_h + py + inset_h + 4), 'Northeast Quadrant', fill=(20, 20, 20), font=label_font)
+
+    src_x0 = x0
+    src_y0 = header_h + y0
+    src_x1 = x1
+    src_y1 = header_h + y1
+    draw.rectangle((src_x0, src_y0, src_x1, src_y1), outline=(245, 245, 245), width=2)
+    draw.rectangle((src_x0 + 1, src_y0 + 1, src_x1 - 1, src_y1 - 1), outline=(20, 20, 20), width=1)
+    draw.line((src_x1, src_y0, px, header_h + py), fill=(245, 245, 245), width=2)
+    draw.line((src_x1, src_y1, px, header_h + py + inset_h), fill=(245, 245, 245), width=2)
+
+
+def _draw_legend(draw, product_key, width, y):
+    label_font = load_font(22 if width >= 1200 else 18, bold=False)
+    tick_font = load_font(16 if width >= 1200 else 14, bold=False)
+    x_pad = 58 if width >= 1200 else 36
+    bar_x = x_pad
+    bar_w = width - 2 * x_pad
+    bar_y = y + 26
+    bar_h = 22
+
+    if product_key in ('nh_z500a', 'na_z500a'):
+        _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
+        draw.text((bar_x, y + 2), '500-hPa Height Anomaly (m)', fill=(22, 22, 22), font=label_font)
+        _draw_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, ANOMALY_PALETTE)
+        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [-100, -70, -40, -20, 0, 20, 40, 70, 100], -100, 100, tick_font)
+        return
+
+    if product_key == 'conus_vort500':
+        _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
+        draw.text((bar_x, y + 2), '500-hPa Relative Vorticity (x10^-5 s^-1)', fill=(22, 22, 22), font=label_font)
+        _draw_tapered_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, VORTICITY_PALETTE)
+        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48], 4, 50, tick_font)
+        return
+
+    if product_key == 'conus_snow_accum':
+        _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
+        draw.text((bar_x, y + 2), 'Accumulated Snowfall Total (in, 10:1 ratio)', fill=(22, 22, 22), font=label_font)
+        _draw_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, SNOW_ACCUM_PALETTE)
+        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [0.1, 1, 2, 4, 6, 8, 11, 15, 21, 29, 40, 56, 72], 0.1, 72.0, tick_font)
+        return
+
+    if product_key == 'conus_mslp_ptype':
+        draw.text((bar_x, y + 2), 'Precip Rate (mm/hr) by Type', fill=(22, 22, 22), font=label_font)
+        gap = 16 if width >= 1200 else 10
+        slot_w = int((bar_w - 3 * gap) / 4)
+        panel_h = 96
+        labels = [
+            ('Rain', RAIN_RATE_PALETTE),
+            ('Snow', SNOW_RATE_PALETTE),
+            ('Freezing Rain', FRZR_RATE_PALETTE),
+            ('Sleet', SLEET_RATE_PALETTE),
+        ]
+        for i, (name, palette) in enumerate(labels):
+            sx = bar_x + i * (slot_w + gap)
+            panel_x0 = sx - 6
+            panel_y0 = y + 28
+            panel_x1 = sx + slot_w + 6
+            panel_y1 = panel_y0 + panel_h
+            _draw_panel(draw, panel_x0, panel_y0, panel_x1, panel_y1, fill=(242, 242, 242), outline=(130, 130, 130), radius=8)
+            draw.text((sx + 2, y + 34), name, fill=(24, 24, 24), font=tick_font)
+            gradient_y = y + 58
+            _draw_gradient_bar(draw, sx, gradient_y, slot_w, bar_h, palette)
+            _draw_ticks(draw, sx, gradient_y, slot_w, bar_h, [0.1, 0.3, 1, 3, 6, 11, 24, 38], 0.1, 38.0, tick_font)
+
+
 def annotate_map_file(out_file, product_key, hour):
     from PIL import Image, ImageDraw
 
     product_titles = {
-        'nh_z500a': 'WN2 0.25° | 500-hPa Geopotential Height (dam) & Anomaly (m) | Northern Hemisphere',
-        'na_z500a': 'WN2 0.25° | 500-hPa Geopotential Height (dam) & Anomaly (m) | North America',
-        'conus_mslp_ptype': 'WN2 0.25° | MSLP (hPa) + 500-hPa Height (dam) + Precip Type | CONUS',
-        'conus_vort500': 'WN2 0.25° | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
+        'nh_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly (m) | Northern Hemisphere',
+        'na_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly (m) | North America',
+        'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + 500-hPa Height (dam) + Precip Type | CONUS',
+        'conus_vort500': 'WN2 0.25 deg | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
+        'conus_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) + MSLP (hPa) | CONUS',
     }
     title = product_titles.get(product_key, product_key)
     init_text, valid_text = format_map_times(hour)
@@ -393,24 +668,38 @@ def annotate_map_file(out_file, product_key, hour):
 
     with Image.open(out_file) as src:
         img = src.convert('RGB')
+        legend_h = 0
+        if product_key == 'conus_mslp_ptype':
+            legend_h = 180
+        elif product_key in ('nh_z500a', 'na_z500a', 'conus_vort500', 'conus_snow_accum'):
+            legend_h = 96
+
         header_h = 78
-        footer_h = 20
-        canvas = Image.new('RGB', (img.width, img.height + header_h + footer_h), color=(236, 236, 236))
+        footer_h = 22
+        canvas = Image.new('RGB', (img.width, img.height + header_h + legend_h + footer_h), color=(236, 236, 236))
         canvas.paste(img, (0, header_h))
         draw = ImageDraw.Draw(canvas)
+
+        if product_key in ('conus_mslp_ptype', 'conus_snow_accum'):
+            _add_northeast_inset(canvas, img, header_h)
+
         title_font = load_font(30 if img.width >= 1300 else 26, bold=True)
         subtitle_font = load_font(22 if img.width >= 1300 else 19, bold=False)
         footer_font = load_font(15 if img.width >= 1300 else 13, bold=False)
 
         draw.text((12, 10), title, fill=(20, 20, 20), font=title_font)
         draw.text((12, 44), subtitle, fill=(25, 25, 25), font=subtitle_font)
-        footer_text = f'Run: {run_date} | Source: WeatherNext2 (Earth Engine)'
-        draw.text((12, img.height + header_h + 2), footer_text, fill=(35, 35, 35), font=footer_font)
         draw.rectangle((0, header_h, img.width - 1, header_h + img.height - 1), outline=(32, 32, 32), width=2)
+
+        if legend_h > 0:
+            _draw_legend(draw, product_key, img.width, header_h + img.height + 2)
+
+        footer_text = f'Run: {run_date} | Source: WeatherNext2 (Earth Engine)'
+        draw.text((12, img.height + header_h + legend_h + 2), footer_text, fill=(35, 35, 35), font=footer_font)
         canvas.save(out_file, format='JPEG', quality=95)
 
 
-def remap_nh_to_polar(out_file, lon0=-100.0, lat_min=20.0, lat_max=89.0):
+def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
     from PIL import Image, ImageDraw
 
     with Image.open(out_file) as src:
@@ -538,11 +827,7 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     anomaly_layer = anomaly_m.visualize(
         min=anomaly_min,
         max=anomaly_max,
-        palette=[
-            '#6a00a8', '#9c4dcc', '#5e60ce', '#2f80ed', '#7dcfff',
-            '#f7f7f7',
-            '#ffe08a', '#ffad5a', '#ff6b3a', '#d7301f', '#7f0000'
-        ],
+        palette=ANOMALY_PALETTE,
     )
     z500_contours = contour_overlay(forecast_height_dam, interval=6, color='#1f1f1f', opacity=0.84)
     overlays = [
@@ -557,12 +842,13 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     if prefix == 'nh_z500a':
         west_file = f'{OUTPUT}/_tmp_nh_w_{h:03d}.jpg'
         east_file = f'{OUTPUT}/_tmp_nh_e_{h:03d}.jpg'
-        export_composite(composite.clip(NH_W), west_file, NH_W_BOUNDS, dimensions='1100x440')
-        export_composite(composite.clip(NH_E), east_file, NH_E_BOUNDS, dimensions='1100x440')
+        split_dims = split_nh_dimensions(NH_SOURCE_DIMS)
+        export_composite(composite.clip(NH_W), west_file, NH_W_BOUNDS, dimensions=split_dims)
+        export_composite(composite.clip(NH_E), east_file, NH_E_BOUNDS, dimensions=split_dims)
         stitch_horizontal(west_file, east_file, out_file)
         os.remove(west_file)
         os.remove(east_file)
-        remap_nh_to_polar(out_file)
+        remap_nh_to_polar(out_file, lon0=NH_LON0)
         annotate_map_file(out_file, prefix, h)
         return
 
@@ -576,35 +862,48 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     annotate_map_file(out_file, prefix, h)
 
 
-def generate_mslp_ptype_map(img, h):
-    region_geom = ee.Geometry.Rectangle(CONUS_THUMB_REGION, geodesic=False)
-    precip_rate = img.select(WN2_PRECIP_6H_BAND).multiply(1000).divide(6).focalMean(2, 'circle', 'pixels')  # mm/hr
-    precip_mask = precip_rate.gt(0.35)
+def derive_precip_phase(img, region_geom):
+    precip_6h_mm = img.select(WN2_PRECIP_6H_BAND).multiply(1000).clip(region_geom)
+    precip_rate = precip_6h_mm.divide(6)  # mm/hr
+    precip_rate_sm = precip_rate.focalMean(2, 'circle', 'pixels')
+    precip_mask = precip_rate_sm.gt(0.35)
 
-    t2c = img.select(WN2_T2M_BAND).subtract(273.15)
-    t850c = img.select(WN2_T850_BAND).subtract(273.15)
-    t700c = img.select(WN2_T700_BAND).subtract(273.15)
+    t2c = img.select(WN2_T2M_BAND).subtract(273.15).clip(region_geom)
+    t850c = img.select(WN2_T850_BAND).subtract(273.15).clip(region_geom)
+    t700c = img.select(WN2_T700_BAND).subtract(273.15).clip(region_geom)
 
     snow = precip_mask.And(t2c.lte(1)).And(t850c.lte(-1)).And(t700c.lte(-2))
     freezing_rain = precip_mask.And(t2c.lte(0)).And(t850c.gt(1)).And(t700c.gt(-2))
     sleet = precip_mask.And(t2c.lte(0)).And(t850c.gt(0)).And(t700c.lte(-2)).And(freezing_rain.Not())
     rain = precip_mask.And(snow.Not()).And(freezing_rain.Not()).And(sleet.Not())
+    return precip_rate_sm, precip_6h_mm, rain, snow, freezing_rain, sleet
+
+
+def snow_increment_cm(img, region_geom):
+    precip_rate_sm, precip_6h_mm, _, snow, _, _ = derive_precip_phase(img, region_geom)
+    robust_snow = snow.And(precip_rate_sm.gt(0.2))
+    return precip_6h_mm.updateMask(robust_snow).unmask(0).rename('snow_cm_6h')
+
+
+def generate_mslp_ptype_map(img, h):
+    region_geom = ee.Geometry.Rectangle(CONUS_THUMB_REGION, geodesic=False)
+    precip_rate, _, rain, snow, freezing_rain, sleet = derive_precip_phase(img, region_geom)
 
     rain_layer = precip_rate.updateMask(rain).visualize(
         min=0.1, max=25,
-        palette=['#9be564', '#4caf50', '#2e7d32', '#ffe600', '#ff9800', '#e53935', '#b71c1c'],
+        palette=RAIN_RATE_PALETTE,
     )
     snow_layer = precip_rate.updateMask(snow).visualize(
         min=0.1, max=25,
-        palette=['#c7ebff', '#7fd4ff', '#4aa3df', '#1f78b4', '#0d47a1', '#4a148c'],
+        palette=SNOW_RATE_PALETTE,
     )
     frz_layer = precip_rate.updateMask(freezing_rain).visualize(
         min=0.1, max=25,
-        palette=['#ffc4da', '#f06292', '#d81b60', '#ad1457', '#880e4f'],
+        palette=FRZR_RATE_PALETTE,
     )
     sleet_layer = precip_rate.updateMask(sleet).visualize(
         min=0.1, max=25,
-        palette=['#e1bee7', '#ce93d8', '#ab47bc', '#8e24aa', '#6a1b9a'],
+        palette=SLEET_RATE_PALETTE,
     )
 
     mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(region_geom)
@@ -638,6 +937,32 @@ def generate_mslp_ptype_map(img, h):
     annotate_map_file(out_file, 'conus_mslp_ptype', h)
 
 
+def generate_snow_accum_map(img, h, running_snow_cm):
+    region_geom = ee.Geometry.Rectangle(CONUS_THUMB_REGION, geodesic=False)
+    snow_total_in = running_snow_cm.divide(2.54).clip(region_geom)
+
+    snow_layer = snow_total_in.updateMask(snow_total_in.gt(0.1)).visualize(
+        min=0.1, max=72,
+        palette=SNOW_ACCUM_PALETTE,
+    )
+    mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(region_geom)
+    mslp_contours = contour_overlay(mslp_hpa, interval=3, color='#2f2f2f', opacity=0.9)
+    z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
+    z500_contours = contour_overlay(z500_height_dam, interval=6, color='#4a4a4a', opacity=0.76)
+
+    composite = ee.ImageCollection([
+        basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6'),
+        snow_layer,
+        mslp_contours,
+        z500_contours,
+        border_overlay(include_states=True),
+    ]).mosaic()
+
+    out_file = f'{OUTPUT}/conus_snow_accum_{h:03d}.jpg'
+    export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=CONUS_DIMS)
+    annotate_map_file(out_file, 'conus_snow_accum', h)
+
+
 def generate_vort500_map(img, h):
     region_geom = ee.Geometry.Rectangle(CONUS_THUMB_REGION, geodesic=False)
     u = img.select(WN2_500_U_BAND).resample('bilinear').focalMean(2, 'circle', 'pixels')
@@ -656,7 +981,7 @@ def generate_vort500_map(img, h):
 
     vort_layer = vort_display.updateMask(vort_display.gt(6)).visualize(
         min=6, max=50,
-        palette=['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f'],
+        palette=VORTICITY_PALETTE,
     )
     z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
     z500_contours = contour_overlay(
@@ -718,30 +1043,40 @@ product_patterns = [
     'na_z500a_*.jpg',
     'conus_mslp_ptype_*.jpg',
     'conus_vort500_*.jpg',
+    'conus_snow_accum_*.jpg',
 ]
+running_snow_cm = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
 
 for h in HOURS:
     print(f'Generating Hour {h}...')
     img = get_hour_image(h)
+    running_snow_cm = running_snow_cm.add(snow_increment_cm(img, CONUS_REGION)).rename('snow_total_cm')
     tasks = [
-        ('nh_z500a', lambda: generate_z500_anomaly_map(img, h, NH_THUMB_REGION, 'nh_z500a')),
-        ('na_z500a', lambda: generate_z500_anomaly_map(img, h, NA_THUMB_REGION, 'na_z500a')),
-        ('conus_mslp_ptype', lambda: generate_mslp_ptype_map(img, h)),
-        ('conus_vort500', lambda: generate_vort500_map(img, h)),
+        ('nh_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NH_THUMB_REGION, 'nh_z500a')),
+        ('na_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NA_THUMB_REGION, 'na_z500a')),
+        ('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh)),
+        ('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)),
+        ('conus_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s)),
     ]
-    for name, fn in tasks:
-        try:
-            fn()
-            successful_exports += 1
-        except Exception as e:
-            err_msg = str(e)
-            print(f'[{ts()}] Hour {h} product {name}: FAILED - {err_msg}')
-            failures.append((f'{h}:{name}', err_msg))
-            if 'earthengine.thumbnails.create' in err_msg:
-                raise RuntimeError(
-                    "Earth Engine permission denied: earthengine.thumbnails.create. "
-                    "Grant the service account Earth Engine User (or Admin) on EE_PROJECT and ensure Earth Engine API is enabled."
-                ) from e
+    with ThreadPoolExecutor(max_workers=EXPORT_WORKERS) as pool:
+        future_to_name = {pool.submit(fn): name for name, fn in tasks}
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                future.result()
+                successful_exports += 1
+            except Exception as e:
+                err_msg = str(e)
+                print(f'[{ts()}] Hour {h} product {name}: FAILED - {err_msg}')
+                failures.append((f'{h}:{name}', err_msg))
+                if 'earthengine.thumbnails.create' in err_msg:
+                    for pending in future_to_name:
+                        if pending is not future:
+                            pending.cancel()
+                    raise RuntimeError(
+                        "Earth Engine permission denied: earthengine.thumbnails.create. "
+                        "Grant the service account Earth Engine User (or Admin) on EE_PROJECT and ensure Earth Engine API is enabled."
+                    ) from e
 
 if failures:
     print(f'[{ts()}] Completed with {len(failures)} failed hour(s).')
@@ -761,54 +1096,153 @@ html = f"""
 <html>
 <head>
     <title>WN2 Multi-Product Viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body {{ background:#1f1f1f; color:#efefef; font-family:system-ui, sans-serif; text-align:center; margin:0; }}
-        .wrap {{ max-width:1200px; margin:0 auto; padding:18px; }}
-        img {{ max-width:100%; height:auto; border:1px solid #4f4f4f; background:#111; }}
-        button {{ padding:10px 20px; font-size:16px; cursor:pointer; }}
-        select {{ padding:8px 10px; font-size:15px; }}
-        .controls {{ display:flex; gap:12px; justify-content:center; align-items:center; flex-wrap:wrap; margin-bottom:14px; }}
+        body {{
+            background:#1f1f1f;
+            color:#efefef;
+            font-family:system-ui, sans-serif;
+            text-align:center;
+            margin:0;
+            padding-bottom:136px;
+        }}
+        .wrap {{ max-width:1240px; margin:0 auto; padding:14px 10px 18px; }}
+        .map-wrap {{ background:#111; border:1px solid #4f4f4f; }}
+        img {{ width:100%; height:auto; display:block; background:#111; }}
+        button {{
+            padding:10px 16px;
+            font-size:16px;
+            cursor:pointer;
+            border:1px solid #666;
+            background:#2d2d2d;
+            color:#f1f1f1;
+            border-radius:8px;
+        }}
+        select {{
+            padding:8px 10px;
+            font-size:15px;
+            border-radius:8px;
+            border:1px solid #666;
+            background:#2a2a2a;
+            color:#f1f1f1;
+        }}
+        #label {{
+            display:inline-block;
+            min-width:120px;
+            font-weight:700;
+            letter-spacing:0.03em;
+        }}
+        .bottom-controls {{
+            position:fixed;
+            left:0;
+            right:0;
+            bottom:0;
+            background:#141414;
+            border-top:1px solid #3c3c3c;
+            padding:10px 10px 12px;
+            box-shadow:0 -6px 16px rgba(0, 0, 0, 0.35);
+        }}
+        .row {{
+            max-width:1240px;
+            margin:0 auto;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            flex-wrap:wrap;
+            gap:10px;
+        }}
+        #hourSlider {{
+            width:min(960px, 94vw);
+            height:34px;
+            touch-action:pan-x;
+        }}
+        @media (max-width: 760px) {{
+            h2 {{ font-size:20px; margin:10px 0; }}
+            button {{ font-size:14px; padding:8px 12px; }}
+            select {{ font-size:14px; }}
+            #label {{ min-width:86px; }}
+            body {{ padding-bottom:160px; }}
+        }}
     </style>
 </head>
 <body>
     <div class="wrap">
-    <h2>WeatherNext 2 Map Viewer: {run_date}</h2>
-
-    <div class="controls">
-        <label for="product">Map:</label>
-        <select id="product" onchange="update()">
-            <option value="nh_z500a">NH 500mb Height Anomaly</option>
-            <option value="na_z500a">North America 500mb Height Anomaly</option>
-            <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
-            <option value="conus_vort500">CONUS 500mb Vorticity</option>
-        </select>
-        <button onclick="change(-1)">Prev</button>
-        <span id="label" style="display:inline-block; width:120px; font-weight:bold;">Hour 000</span>
-        <button onclick="change(1)">Next</button>
+        <h2>WeatherNext 2 Map Viewer: {run_date}</h2>
+        <div class="map-wrap">
+            <img id="map" src="" alt="WN2 map">
+        </div>
     </div>
 
-    <img id="map" src="nh_z500a_000.jpg">
+    <div class="bottom-controls">
+        <div class="row">
+            <label for="product">Map:</label>
+            <select id="product">
+                <option value="nh_z500a">NH 500mb Height Anomaly</option>
+                <option value="na_z500a">North America 500mb Height Anomaly</option>
+                <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
+                <option value="conus_vort500">CONUS 500mb Vorticity</option>
+                <option value="conus_snow_accum">CONUS Snowfall Accumulation</option>
+            </select>
+            <button id="prevBtn">Prev</button>
+            <span id="label">Hour ---</span>
+            <button id="nextBtn">Next</button>
+        </div>
+        <div class="row" style="margin-top:6px;">
+            <input type="range" id="hourSlider" min="0" max="0" step="1" value="0">
+        </div>
+    </div>
 
     <script>
-        let hours = {HOURS};
+        const hours = {HOURS};
         let idx = 0;
 
-        function update() {{
-            let h = hours[idx].toString().padStart(3, '0');
-            let product = document.getElementById('product').value;
-            document.getElementById('map').src = product + '_' + h + '.jpg';
-            document.getElementById('label').innerText = 'Hour ' + h;
+        const mapEl = document.getElementById('map');
+        const labelEl = document.getElementById('label');
+        const productEl = document.getElementById('product');
+        const sliderEl = document.getElementById('hourSlider');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+
+        function render() {{
+            if (!hours.length) {{
+                mapEl.src = '';
+                labelEl.innerText = 'No hours';
+                return;
+            }}
+            const hour = hours[idx];
+            const hourStr = hour.toString().padStart(3, '0');
+            const product = productEl.value;
+            mapEl.src = `${{product}}_${{hourStr}}.jpg`;
+            labelEl.innerText = `Hour ${{hourStr}}`;
         }}
 
         function change(dir) {{
+            if (!hours.length) return;
             idx = (idx + dir + hours.length) % hours.length;
-            update();
+            sliderEl.value = String(idx);
+            render();
+        }}
+
+        sliderEl.addEventListener('input', () => {{
+            idx = Number(sliderEl.value);
+            render();
+        }});
+        productEl.addEventListener('change', render);
+        prevBtn.addEventListener('click', () => change(-1));
+        nextBtn.addEventListener('click', () => change(1));
+
+        if (hours.length > 0) {{
+            sliderEl.max = String(hours.length - 1);
+            sliderEl.value = '0';
+            render();
+        }} else {{
+            render();
         }}
     </script>
-    </div>
 </body>
 </html>
 """
 
 with open(f'{OUTPUT}/index.html', 'w') as f:
     f.write(html)
+
