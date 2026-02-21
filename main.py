@@ -58,10 +58,19 @@ WORLD_REGION = ee.Geometry.Rectangle([-180.0, -89.9, 180.0, 89.9], geodesic=Fals
 NH_THUMB_REGION = [-180.0, 8.0, 20.0, 88.0]
 NA_THUMB_REGION = [-170.0, 8.0, -40.0, 82.0]
 CONUS_THUMB_REGION = [-127.0, 22.0, -65.0, 50.0]
+# Northeast-only domain (excludes VA/NC by southern boundary)
+NE_THUMB_REGION = [-82.5, 39.2, -66.0, 48.8]
 
 # Boundaries overlays
 COUNTRIES = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
 US_STATES = ee.FeatureCollection('TIGER/2018/States')
+NE_STATE_NAMES = [
+    'Connecticut', 'Delaware', 'Maine', 'Maryland', 'Massachusetts',
+    'New Hampshire', 'New Jersey', 'New York', 'Pennsylvania',
+    'Rhode Island', 'Vermont'
+]
+NE_STATES = US_STATES.filter(ee.Filter.inList('NAME', NE_STATE_NAMES))
+NE_EXCLUDED_STATES = US_STATES.filter(ee.Filter.inList('NAME', ['Virginia', 'North Carolina']))
 
 
 def ts():
@@ -86,11 +95,13 @@ FAST_RENDER = _env_flag(fast_render_env, default=(event_name == 'schedule'))
 if FAST_RENDER:
     ANOMALY_DIMS = '980x720'
     CONUS_DIMS = '1200x860'
+    NE_DIMS = '1100x900'
     NH_SOURCE_DIMS = '1800x360'
     NH_POLAR_DIMS = 920
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
+    NE_DIMS = '1200x980'
     NH_SOURCE_DIMS = '2200x440'
     NH_POLAR_DIMS = 1080
 
@@ -113,12 +124,12 @@ SNOW_RATE_PALETTE = ['#e9f7ff', '#c7ebff', '#9edcff', '#67c2f3', '#368fcb', '#1d
 FRZR_RATE_PALETTE = ['#ffe5ef', '#ffc4da', '#f78fb9', '#f06292', '#d81b60', '#ad1457', '#880e4f']
 SLEET_RATE_PALETTE = ['#f0d9ff', '#e1bee7', '#ce93d8', '#ab47bc', '#8e24aa', '#6a1b9a']
 SNOW_ACCUM_PALETTE = [
-    '#6f6f6f', '#9a9a9a', '#c9c9c9',
-    '#d8f3ff', '#bfe8ff', '#9ed8ff', '#77beff', '#519fef', '#2f7fda',
-    '#215fcb', '#1f46bb',
-    '#3d1ca8', '#5b12ad', '#7b0cae',
-    '#990da8', '#b510a3', '#ce1f9f',
-    '#e639a7', '#f06bbd', '#f89ad3', '#fbc1e3'
+    '#f7fcff', '#e8f5ff',
+    '#d7edff', '#a9d5ff', '#78b7ff', '#4b8de6', '#2a5fbf',  # 1-5 blue
+    '#d9c8ff', '#b596ff', '#9164e8', '#7038c8', '#5420a8',  # 6-10 purple
+    '#f9bddf', '#f58bc8', '#ec56b0', '#d92f95', '#b81479',  # 10-14 pink
+    '#d7ffff', '#a8f7f7', '#73e8ee', '#3fd8e1', '#12c7d4', '#00b7c5',  # 14-24 cyan
+    '#b8f5a8', '#8fe083', '#5fca57', '#35ae34', '#1f8e28', '#156d1f'   # 25-30 green
 ]
 
 
@@ -128,8 +139,10 @@ def cleanup_old_products():
         'nh_z500a_*.jpg',
         'na_z500a_*.jpg',
         'conus_mslp_ptype_*.jpg',
+        'ne_mslp_ptype_*.jpg',
         'conus_vort500_*.jpg',
         'conus_snow_accum_*.jpg',
+        'ne_snow_accum_*.jpg',
     ]
     removed = 0
     for pattern in stale_patterns:
@@ -386,17 +399,19 @@ def contour_overlay(field, interval, color, opacity=0.82):
     return edges.visualize(palette=[color], opacity=opacity)
 
 
-def border_overlay(include_states=False):
+def border_overlay(include_states=False, state_names=None):
     country_lines = ee.Image().byte().paint(COUNTRIES, 1, 1).selfMask().visualize(palette=['#333333'])
     if include_states:
-        state_lines = ee.Image().byte().paint(US_STATES, 1, 1).selfMask().visualize(palette=['#6b4a2c'])
+        state_fc = US_STATES if not state_names else US_STATES.filter(ee.Filter.inList('NAME', state_names))
+        state_lines = ee.Image().byte().paint(state_fc, 1, 1).selfMask().visualize(palette=['#6b4a2c'])
         return ee.ImageCollection([country_lines, state_lines]).mosaic()
     return country_lines
 
 
-def basemap_overlay(region_geom, land_color='#ececec', ocean_color='#cfe0ea'):
+def basemap_overlay(region_geom, land_color='#ececec', ocean_color='#cfe0ea', land_fc=None):
     ocean = ee.Image.constant(1).clip(region_geom).visualize(palette=[ocean_color], opacity=1.0)
-    land_mask = ee.Image().byte().paint(COUNTRIES, 1, 1).clip(region_geom).selfMask()
+    land_features = land_fc if land_fc is not None else COUNTRIES
+    land_mask = ee.Image().byte().paint(land_features, 1, 1).clip(region_geom).selfMask()
     land = land_mask.visualize(palette=[land_color], opacity=1.0)
     return ee.ImageCollection([ocean, land]).mosaic()
 
@@ -545,57 +560,21 @@ def _draw_panel(draw, x0, y0, x1, y1, fill=(242, 242, 242), outline=(120, 120, 1
     draw.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=fill, outline=outline, width=2)
 
 
-def _add_northeast_inset(canvas, map_img, header_h):
-    from PIL import Image, ImageDraw
-
-    lon_min, lat_min, lon_max, lat_max = CONUS_THUMB_REGION
-
-    def lonlat_to_xy(lon, lat):
-        xf = (lon - lon_min) / float(lon_max - lon_min)
-        yf = (lat_max - lat) / float(lat_max - lat_min)
-        x = int(round(xf * (map_img.width - 1)))
-        y = int(round(yf * (map_img.height - 1)))
-        return x, y
-
-    west, east = -86.0, -62.0
-    south, north = 35.0, 49.5
-    x0, y0 = lonlat_to_xy(west, north)
-    x1, y1 = lonlat_to_xy(east, south)
-    x0 = max(0, min(map_img.width - 2, x0))
-    y0 = max(0, min(map_img.height - 2, y0))
-    x1 = max(x0 + 2, min(map_img.width - 1, x1))
-    y1 = max(y0 + 2, min(map_img.height - 1, y1))
-
-    crop = map_img.crop((x0, y0, x1, y1))
-    inset_w = int(map_img.width * (0.29 if map_img.width >= 1300 else 0.34))
-    inset_h = max(150, int(inset_w * crop.height / max(1, crop.width)))
-    inset = crop.resize((inset_w, inset_h), resample=Image.Resampling.BILINEAR)
-
-    px = map_img.width - inset_w - 16
-    py = int(map_img.height * 0.06)
-    panel_pad = 8
-
-    draw = ImageDraw.Draw(canvas)
-    panel_x0 = px - panel_pad
-    panel_y0 = header_h + py - panel_pad
-    panel_x1 = px + inset_w + panel_pad
-    panel_y1 = header_h + py + inset_h + panel_pad + 28
-    _draw_panel(draw, panel_x0, panel_y0, panel_x1, panel_y1, fill=(236, 236, 236), outline=(70, 70, 70), radius=8)
-
-    canvas.paste(inset, (px, header_h + py))
-    draw.rectangle((px, header_h + py, px + inset_w, header_h + py + inset_h), outline=(18, 18, 18), width=2)
-    label_font = load_font(18, bold=True)
-    draw.rectangle((px, header_h + py + inset_h + 2, px + inset_w, header_h + py + inset_h + 27), fill=(228, 228, 228), outline=(80, 80, 80), width=1)
-    draw.text((px + 8, header_h + py + inset_h + 4), 'Northeast Quadrant', fill=(20, 20, 20), font=label_font)
-
-    src_x0 = x0
-    src_y0 = header_h + y0
-    src_x1 = x1
-    src_y1 = header_h + y1
-    draw.rectangle((src_x0, src_y0, src_x1, src_y1), outline=(245, 245, 245), width=2)
-    draw.rectangle((src_x0 + 1, src_y0 + 1, src_x1 - 1, src_y1 - 1), outline=(20, 20, 20), width=1)
-    draw.line((src_x1, src_y0, px, header_h + py), fill=(245, 245, 245), width=2)
-    draw.line((src_x1, src_y1, px, header_h + py + inset_h), fill=(245, 245, 245), width=2)
+def _draw_segmented_gradient_bar(draw, x, y, w, h, segments, vmin, vmax):
+    if w < 2 or h < 2 or vmax <= vmin:
+        return
+    for low, high, palette in segments:
+        clamped_low = max(vmin, min(vmax, low))
+        clamped_high = max(vmin, min(vmax, high))
+        if clamped_high <= clamped_low:
+            continue
+        sx = x + int(round((clamped_low - vmin) / float(vmax - vmin) * w))
+        ex = x + int(round((clamped_high - vmin) / float(vmax - vmin) * w))
+        seg_w = max(1, ex - sx)
+        for i in range(seg_w):
+            frac = i / float(max(1, seg_w - 1))
+            draw.line([(sx + i, y), (sx + i, y + h)], fill=_interp_palette_color(palette, frac), width=1)
+    draw.rectangle((x, y, x + w, y + h), outline=(50, 50, 50), width=1)
 
 
 def _draw_legend(draw, product_key, width, y):
@@ -621,14 +600,22 @@ def _draw_legend(draw, product_key, width, y):
         _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48], 4, 50, tick_font)
         return
 
-    if product_key == 'conus_snow_accum':
+    if product_key in ('conus_snow_accum', 'ne_snow_accum'):
         _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
         draw.text((bar_x, y + 2), 'Accumulated Snowfall Total (in, 10:1 ratio)', fill=(22, 22, 22), font=label_font)
-        _draw_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, SNOW_ACCUM_PALETTE)
-        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [0.1, 1, 2, 4, 6, 8, 11, 15, 21, 29, 40, 56, 72], 0.1, 72.0, tick_font)
+        snow_segments = [
+            (0.1, 1.0, ['#f7fcff', '#e8f5ff']),
+            (1.0, 5.0, ['#d7edff', '#a9d5ff', '#78b7ff', '#4b8de6', '#2a5fbf']),
+            (5.0, 10.0, ['#d9c8ff', '#b596ff', '#9164e8', '#7038c8', '#5420a8']),
+            (10.0, 14.0, ['#f9bddf', '#f58bc8', '#ec56b0', '#d92f95', '#b81479']),
+            (14.0, 24.0, ['#d7ffff', '#a8f7f7', '#73e8ee', '#3fd8e1', '#12c7d4', '#00b7c5']),
+            (24.0, 30.0, ['#b8f5a8', '#8fe083', '#5fca57', '#35ae34', '#1f8e28', '#156d1f']),
+        ]
+        _draw_segmented_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, snow_segments, 0.1, 30.0)
+        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [0.1, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 18, 24, 25, 27, 30], 0.1, 30.0, tick_font)
         return
 
-    if product_key == 'conus_mslp_ptype':
+    if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
         draw.text((bar_x, y + 2), 'Precip Rate (mm/hr) by Type', fill=(22, 22, 22), font=label_font)
         gap = 16 if width >= 1200 else 10
         slot_w = int((bar_w - 3 * gap) / 4)
@@ -659,8 +646,10 @@ def annotate_map_file(out_file, product_key, hour):
         'nh_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly (m) | Northern Hemisphere',
         'na_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly (m) | North America',
         'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + 500-hPa Height (dam) + Precip Type | CONUS',
+        'ne_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + 500-hPa Height (dam) + Precip Type | Northeast',
         'conus_vort500': 'WN2 0.25 deg | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
         'conus_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) + MSLP (hPa) | CONUS',
+        'ne_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) + MSLP (hPa) | Northeast',
     }
     title = product_titles.get(product_key, product_key)
     init_text, valid_text = format_map_times(hour)
@@ -669,9 +658,9 @@ def annotate_map_file(out_file, product_key, hour):
     with Image.open(out_file) as src:
         img = src.convert('RGB')
         legend_h = 0
-        if product_key == 'conus_mslp_ptype':
+        if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
             legend_h = 180
-        elif product_key in ('nh_z500a', 'na_z500a', 'conus_vort500', 'conus_snow_accum'):
+        elif product_key in ('nh_z500a', 'na_z500a', 'conus_vort500', 'conus_snow_accum', 'ne_snow_accum'):
             legend_h = 96
 
         header_h = 78
@@ -679,9 +668,6 @@ def annotate_map_file(out_file, product_key, hour):
         canvas = Image.new('RGB', (img.width, img.height + header_h + legend_h + footer_h), color=(236, 236, 236))
         canvas.paste(img, (0, header_h))
         draw = ImageDraw.Draw(canvas)
-
-        if product_key in ('conus_mslp_ptype', 'conus_snow_accum'):
-            _add_northeast_inset(canvas, img, header_h)
 
         title_font = load_font(30 if img.width >= 1300 else 26, bold=True)
         subtitle_font = load_font(22 if img.width >= 1300 else 19, bold=False)
@@ -885,9 +871,35 @@ def snow_increment_cm(img, region_geom):
     return precip_6h_mm.updateMask(robust_snow).unmask(0).rename('snow_cm_6h')
 
 
-def generate_mslp_ptype_map(img, h):
-    region_geom = ee.Geometry.Rectangle(CONUS_THUMB_REGION, geodesic=False)
-    precip_rate, _, rain, snow, freezing_rain, sleet = derive_precip_phase(img, region_geom)
+def range_gradient_layer(field, low, high, palette, include_high=False):
+    span = max(high - low, 0.001)
+    norm = field.subtract(low).divide(span).clamp(0, 1)
+    if include_high:
+        mask = field.gte(low).And(field.lte(high))
+    else:
+        mask = field.gte(low).And(field.lt(high))
+    return norm.updateMask(mask).visualize(min=0, max=1, palette=palette)
+
+
+def snow_accum_layer(snow_total_in):
+    return ee.ImageCollection([
+        range_gradient_layer(snow_total_in, 0.1, 1.0, ['#f7fcff', '#e8f5ff']),
+        range_gradient_layer(snow_total_in, 1.0, 5.0, ['#d7edff', '#a9d5ff', '#78b7ff', '#4b8de6', '#2a5fbf']),
+        range_gradient_layer(snow_total_in, 5.0, 10.0, ['#d9c8ff', '#b596ff', '#9164e8', '#7038c8', '#5420a8']),
+        range_gradient_layer(snow_total_in, 10.0, 14.0, ['#f9bddf', '#f58bc8', '#ec56b0', '#d92f95', '#b81479']),
+        range_gradient_layer(snow_total_in, 14.0, 24.0, ['#d7ffff', '#a8f7f7', '#73e8ee', '#3fd8e1', '#12c7d4', '#00b7c5']),
+        range_gradient_layer(snow_total_in, 24.0, 30.0, ['#b8f5a8', '#8fe083', '#5fca57', '#35ae34', '#1f8e28', '#156d1f'], include_high=True),
+        snow_total_in.gt(30.0).selfMask().visualize(palette=['#156d1f']),
+    ]).mosaic()
+
+
+def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_ptype'):
+    region_geom = ee.Geometry.Rectangle(region, geodesic=False)
+    is_ne = key.startswith('ne_')
+    state_names = NE_STATE_NAMES if is_ne else None
+    land_fc = NE_STATES if is_ne else None
+    work_geom = region_geom.difference(NE_EXCLUDED_STATES.geometry(), maxError=1000) if is_ne else region_geom
+    precip_rate, _, rain, snow, freezing_rain, sleet = derive_precip_phase(img, work_geom)
 
     rain_layer = precip_rate.updateMask(rain).visualize(
         min=0.1, max=25,
@@ -906,14 +918,14 @@ def generate_mslp_ptype_map(img, h):
         palette=SLEET_RATE_PALETTE,
     )
 
-    mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(region_geom)
+    mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(work_geom)
     mslp_contours = contour_overlay(
         mslp_hpa,
         interval=3,
         color='#2a2a2a',
         opacity=0.9,
     )
-    z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
+    z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(work_geom)
     z500_contours = contour_overlay(
         z500_height_dam,
         interval=6,
@@ -922,45 +934,48 @@ def generate_mslp_ptype_map(img, h):
     )
 
     composite = ee.ImageCollection([
-        basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6'),
+        basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6', land_fc=land_fc),
         rain_layer,
         snow_layer,
         frz_layer,
         sleet_layer,
         mslp_contours,
         z500_contours,
-        border_overlay(include_states=True),
+        border_overlay(include_states=True, state_names=state_names),
     ]).mosaic()
 
-    out_file = f'{OUTPUT}/conus_mslp_ptype_{h:03d}.jpg'
-    export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=CONUS_DIMS)
-    annotate_map_file(out_file, 'conus_mslp_ptype', h)
+    out_file = f'{OUTPUT}/{key}_{h:03d}.jpg'
+    dims = NE_DIMS if key.startswith('ne_') else CONUS_DIMS
+    export_composite(composite, out_file, region, dimensions=dims)
+    annotate_map_file(out_file, key, h)
 
 
-def generate_snow_accum_map(img, h, running_snow_cm):
-    region_geom = ee.Geometry.Rectangle(CONUS_THUMB_REGION, geodesic=False)
-    snow_total_in = running_snow_cm.divide(2.54).clip(region_geom)
+def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, key='conus_snow_accum'):
+    region_geom = ee.Geometry.Rectangle(region, geodesic=False)
+    is_ne = key.startswith('ne_')
+    state_names = NE_STATE_NAMES if is_ne else None
+    land_fc = NE_STATES if is_ne else None
+    work_geom = region_geom.difference(NE_EXCLUDED_STATES.geometry(), maxError=1000) if is_ne else region_geom
+    snow_total_in = running_snow_cm.divide(2.54).clip(work_geom)
 
-    snow_layer = snow_total_in.updateMask(snow_total_in.gt(0.1)).visualize(
-        min=0.1, max=72,
-        palette=SNOW_ACCUM_PALETTE,
-    )
-    mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(region_geom)
+    snow_layer = snow_accum_layer(snow_total_in)
+    mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(work_geom)
     mslp_contours = contour_overlay(mslp_hpa, interval=3, color='#2f2f2f', opacity=0.9)
-    z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
+    z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(work_geom)
     z500_contours = contour_overlay(z500_height_dam, interval=6, color='#4a4a4a', opacity=0.76)
 
     composite = ee.ImageCollection([
-        basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6'),
+        basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6', land_fc=land_fc),
         snow_layer,
         mslp_contours,
         z500_contours,
-        border_overlay(include_states=True),
+        border_overlay(include_states=True, state_names=state_names),
     ]).mosaic()
 
-    out_file = f'{OUTPUT}/conus_snow_accum_{h:03d}.jpg'
-    export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=CONUS_DIMS)
-    annotate_map_file(out_file, 'conus_snow_accum', h)
+    out_file = f'{OUTPUT}/{key}_{h:03d}.jpg'
+    dims = NE_DIMS if key.startswith('ne_') else CONUS_DIMS
+    export_composite(composite, out_file, region, dimensions=dims)
+    annotate_map_file(out_file, key, h)
 
 
 def generate_vort500_map(img, h):
@@ -1042,8 +1057,10 @@ product_patterns = [
     'nh_z500a_*.jpg',
     'na_z500a_*.jpg',
     'conus_mslp_ptype_*.jpg',
+    'ne_mslp_ptype_*.jpg',
     'conus_vort500_*.jpg',
     'conus_snow_accum_*.jpg',
+    'ne_snow_accum_*.jpg',
 ]
 running_snow_cm = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
 
@@ -1054,9 +1071,11 @@ for h in HOURS:
     tasks = [
         ('nh_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NH_THUMB_REGION, 'nh_z500a')),
         ('na_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NA_THUMB_REGION, 'na_z500a')),
-        ('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh)),
+        ('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, CONUS_THUMB_REGION, 'conus_mslp_ptype')),
+        ('ne_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, NE_THUMB_REGION, 'ne_mslp_ptype')),
         ('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)),
-        ('conus_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s)),
+        ('conus_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s, CONUS_THUMB_REGION, 'conus_snow_accum')),
+        ('ne_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s, NE_THUMB_REGION, 'ne_snow_accum')),
     ]
     with ThreadPoolExecutor(max_workers=EXPORT_WORKERS) as pool:
         future_to_name = {pool.submit(fn): name for name, fn in tasks}
@@ -1180,8 +1199,10 @@ html = f"""
                 <option value="nh_z500a">NH 500mb Height Anomaly</option>
                 <option value="na_z500a">North America 500mb Height Anomaly</option>
                 <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
+                <option value="ne_mslp_ptype">Northeast MSLP + P-Type</option>
                 <option value="conus_vort500">CONUS 500mb Vorticity</option>
                 <option value="conus_snow_accum">CONUS Snowfall Accumulation</option>
+                <option value="ne_snow_accum">Northeast Snowfall Accumulation</option>
             </select>
             <button id="prevBtn">Prev</button>
             <span id="label">Hour ---</span>
