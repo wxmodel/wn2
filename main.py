@@ -66,12 +66,9 @@ US_STATES = ee.FeatureCollection('TIGER/2018/States')
 def ts():
     return time.strftime('%Y-%m-%d %H:%M:%S')
 
-# Forecast Steps to generate (Hours out)
-HOURS = [0, 6, 12, 18, 24, 30, 36, 42, 48, 60, 72]
+# Forecast hour controls
 hours_csv = os.environ.get('HOURS_CSV')
-if hours_csv:
-    HOURS = [int(x.strip()) for x in hours_csv.split(',') if x.strip()]
-    print(f'[{ts()}] HOURS override from HOURS_CSV: {HOURS}')
+hours_step_env = os.environ.get('HOURS_STEP')
 
 
 def cleanup_old_products():
@@ -162,6 +159,64 @@ latest_start_time, latest_start_date, recent_collection, latest_start_collection
 
 if latest_start_collection.size().getInfo() == 0:
     raise ValueError('Latest WN2 run filter returned no images in the last 7 days.')
+
+
+def _parse_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _infer_available_hours(run_collection):
+    raw_hours = run_collection.aggregate_array('forecast_hour').getInfo()
+    parsed = sorted({h for h in (_parse_int(v) for v in raw_hours) if h is not None and h >= 0})
+    if not parsed:
+        raise ValueError('No numeric forecast_hour values found in latest run.')
+    return parsed
+
+
+def _select_hours(available_hours):
+    if hours_csv:
+        explicit = sorted({int(x.strip()) for x in hours_csv.split(',') if x.strip()})
+        if not explicit:
+            raise ValueError('HOURS_CSV was set but no valid hour values were parsed.')
+        print(f'[{ts()}] HOURS override from HOURS_CSV: {explicit}')
+        return explicit
+
+    deltas = sorted({b - a for a, b in zip(available_hours, available_hours[1:]) if (b - a) > 0})
+    has_3h = 3 in deltas
+    has_6h = 6 in deltas
+
+    preferred_step = _parse_int(hours_step_env) if hours_step_env else None
+    if preferred_step is not None and preferred_step <= 0:
+        preferred_step = None
+
+    if preferred_step is None:
+        step = 3 if has_3h else 6 if has_6h else (deltas[0] if deltas else 6)
+    else:
+        step = preferred_step
+        if step == 3 and not has_3h and has_6h:
+            step = 6
+        elif step == 6 and not has_6h and has_3h:
+            step = 3
+        elif step not in deltas and deltas:
+            step = deltas[0]
+
+    start_hour = available_hours[0]
+    selected = [h for h in available_hours if (h - start_hour) % step == 0]
+    if not selected:
+        selected = available_hours
+
+    print(
+        f'[{ts()}] Auto HOURS: step={step}h, count={len(selected)}, '
+        f'range={selected[0]}..{selected[-1]} (available range {available_hours[0]}..{available_hours[-1]}).'
+    )
+    return selected
+
+
+AVAILABLE_HOURS = _infer_available_hours(latest_start_collection)
+HOURS = _select_hours(AVAILABLE_HOURS)
 
 hour0_candidates = filter_forecast_hour(latest_start_collection, 0)
 hour0_image = ee.Image(ee.Algorithms.If(hour0_candidates.size().gt(0), hour0_candidates.first(), latest_start_collection.first()))
