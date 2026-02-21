@@ -7,7 +7,18 @@ on:
     - cron: "0 8 * * *"   # after 00z cycle
     - cron: "0 14 * * *"  # after 06z cycle
     - cron: "0 20 * * *"  # after 12z cycle
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      preview_one_frame:
+        description: "Generate one frame per product (quick preview)"
+        required: false
+        default: false
+        type: boolean
+      hours_csv:
+        description: "Optional explicit forecast hours (e.g. 6,12,18)"
+        required: false
+        default: ""
+        type: string
   
 concurrency:
   group: wn2-pages
@@ -39,6 +50,9 @@ jobs:
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
           EE_PROJECT: ${{ secrets.EE_PROJECT }}
+          HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || '' }}
+          HOURS_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '' }}
+          HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
         run: python main.py
 
       - name: Deploy to GitHub Pages

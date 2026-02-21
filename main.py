@@ -69,6 +69,8 @@ def ts():
 # Forecast hour controls
 hours_csv = os.environ.get('HOURS_CSV')
 hours_step_env = os.environ.get('HOURS_STEP')
+hours_max_env = os.environ.get('HOURS_MAX')
+hours_limit_env = os.environ.get('HOURS_LIMIT')
 
 
 def cleanup_old_products():
@@ -177,41 +179,69 @@ def _infer_available_hours(run_collection):
 
 
 def _select_hours(available_hours):
+    explicit = None
     if hours_csv:
         explicit = sorted({int(x.strip()) for x in hours_csv.split(',') if x.strip()})
         if not explicit:
             raise ValueError('HOURS_CSV was set but no valid hour values were parsed.')
         print(f'[{ts()}] HOURS override from HOURS_CSV: {explicit}')
-        return explicit
-
-    deltas = sorted({b - a for a, b in zip(available_hours, available_hours[1:]) if (b - a) > 0})
-    has_3h = 3 in deltas
-    has_6h = 6 in deltas
-
-    preferred_step = _parse_int(hours_step_env) if hours_step_env else None
-    if preferred_step is not None and preferred_step <= 0:
-        preferred_step = None
-
-    if preferred_step is None:
-        step = 3 if has_3h else 6 if has_6h else (deltas[0] if deltas else 6)
+        selected = explicit
     else:
-        step = preferred_step
-        if step == 3 and not has_3h and has_6h:
-            step = 6
-        elif step == 6 and not has_6h and has_3h:
-            step = 3
-        elif step not in deltas and deltas:
-            step = deltas[0]
+        deltas = sorted({b - a for a, b in zip(available_hours, available_hours[1:]) if (b - a) > 0})
+        has_3h = 3 in deltas
+        has_6h = 6 in deltas
 
-    start_hour = available_hours[0]
-    selected = [h for h in available_hours if (h - start_hour) % step == 0]
-    if not selected:
-        selected = available_hours
+        preferred_step = _parse_int(hours_step_env) if hours_step_env else None
+        if preferred_step is not None and preferred_step <= 0:
+            preferred_step = None
 
-    print(
-        f'[{ts()}] Auto HOURS: step={step}h, count={len(selected)}, '
-        f'range={selected[0]}..{selected[-1]} (available range {available_hours[0]}..{available_hours[-1]}).'
-    )
+        if preferred_step is None:
+            step = 3 if has_3h else 6 if has_6h else (deltas[0] if deltas else 6)
+        else:
+            step = preferred_step
+            if step == 3 and not has_3h and has_6h:
+                step = 6
+            elif step == 6 and not has_6h and has_3h:
+                step = 3
+            elif step not in deltas and deltas:
+                step = deltas[0]
+
+        start_hour = available_hours[0]
+        selected = [h for h in available_hours if (h - start_hour) % step == 0]
+        if not selected:
+            selected = available_hours
+
+    max_hour = _parse_int(hours_max_env) if hours_max_env else None
+    if max_hour is not None:
+        bounded = [h for h in selected if h <= max_hour]
+        if bounded:
+            selected = bounded
+        else:
+            raise ValueError(f'HOURS_MAX={max_hour} filtered out all selected hours: {selected}')
+
+    limit_count = _parse_int(hours_limit_env) if hours_limit_env else None
+    if limit_count is not None and limit_count > 0:
+        selected = selected[:limit_count]
+
+    if explicit is None:
+        note_parts = []
+        if max_hour is not None:
+            note_parts.append(f'max={max_hour}')
+        if limit_count is not None and limit_count > 0:
+            note_parts.append(f'limit={limit_count}')
+        notes = f" ({', '.join(note_parts)})" if note_parts else ''
+        print(
+            f'[{ts()}] Auto HOURS: step={step}h, count={len(selected)}, '
+            f'range={selected[0]}..{selected[-1]} (available range {available_hours[0]}..{available_hours[-1]}){notes}.'
+        )
+    else:
+        note_parts = []
+        if max_hour is not None:
+            note_parts.append(f'max={max_hour}')
+        if limit_count is not None and limit_count > 0:
+            note_parts.append(f'limit={limit_count}')
+        if note_parts:
+            print(f"[{ts()}] HOURS post-filters: {', '.join(note_parts)} -> {selected}")
     return selected
 
 
