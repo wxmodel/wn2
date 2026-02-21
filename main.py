@@ -83,12 +83,25 @@ hours_max_env = os.environ.get('HOURS_MAX')
 hours_limit_env = os.environ.get('HOURS_LIMIT')
 event_name = (os.environ.get('GITHUB_EVENT_NAME') or '').lower()
 fast_render_env = os.environ.get('FAST_RENDER')
+run_nh_z500a_env = os.environ.get('WN2_RUN_NH_Z500A')
+run_na_z500a_env = os.environ.get('WN2_RUN_NA_Z500A')
+run_conus_mslp_ptype_env = os.environ.get('WN2_RUN_CONUS_MSLP_PTYPE')
+run_ne_mslp_ptype_env = os.environ.get('WN2_RUN_NE_MSLP_PTYPE')
+run_conus_vort500_env = os.environ.get('WN2_RUN_CONUS_VORT500')
+run_conus_snow_accum_env = os.environ.get('WN2_RUN_CONUS_SNOW_ACCUM')
+run_ne_snow_accum_env = os.environ.get('WN2_RUN_NE_SNOW_ACCUM')
 
 
 def _env_flag(raw, default=False):
     if raw is None:
         return default
     return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _select_product_flag(raw, default=True):
+    if raw is None:
+        return default
+    return _env_flag(raw, default=default)
 
 
 FAST_RENDER = _env_flag(fast_render_env, default=(event_name == 'schedule'))
@@ -131,6 +144,29 @@ SNOW_ACCUM_PALETTE = [
     '#d7ffff', '#a8f7f7', '#73e8ee', '#3fd8e1', '#12c7d4', '#00b7c5',  # 14-24 cyan
     '#b8f5a8', '#8fe083', '#5fca57', '#35ae34', '#1f8e28', '#156d1f'   # 25-30 green
 ]
+
+PRODUCT_OPTIONS = [
+    ('nh_z500a', 'NH 500mb Height Anomaly', 'nh_z500a_*.jpg', run_nh_z500a_env),
+    ('na_z500a', 'North America 500mb Height Anomaly', 'na_z500a_*.jpg', run_na_z500a_env),
+    ('conus_mslp_ptype', 'CONUS MSLP + P-Type', 'conus_mslp_ptype_*.jpg', run_conus_mslp_ptype_env),
+    ('ne_mslp_ptype', 'Northeast MSLP + P-Type', 'ne_mslp_ptype_*.jpg', run_ne_mslp_ptype_env),
+    ('conus_vort500', 'CONUS 500mb Vorticity', 'conus_vort500_*.jpg', run_conus_vort500_env),
+    ('conus_snow_accum', 'CONUS Snowfall Accumulation', 'conus_snow_accum_*.jpg', run_conus_snow_accum_env),
+    ('ne_snow_accum', 'Northeast Snowfall Accumulation', 'ne_snow_accum_*.jpg', run_ne_snow_accum_env),
+]
+
+ENABLED_PRODUCTS = []
+for key, label, pattern, raw_flag in PRODUCT_OPTIONS:
+    enabled = _select_product_flag(raw_flag, default=True)
+    if enabled:
+        ENABLED_PRODUCTS.append((key, label, pattern))
+
+if not ENABLED_PRODUCTS:
+    raise ValueError(
+        'No products selected. Enable at least one WN2_RUN_* product flag or select a checkbox in workflow_dispatch.'
+    )
+
+print(f'[{ts()}] Enabled products: {[k for k, _, _ in ENABLED_PRODUCTS]}')
 
 
 def cleanup_old_products():
@@ -1081,30 +1117,32 @@ def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg") -> None:
 cleanup_old_products()
 failures = []
 successful_exports = 0
-product_patterns = [
-    'nh_z500a_*.jpg',
-    'na_z500a_*.jpg',
-    'conus_mslp_ptype_*.jpg',
-    'ne_mslp_ptype_*.jpg',
-    'conus_vort500_*.jpg',
-    'conus_snow_accum_*.jpg',
-    'ne_snow_accum_*.jpg',
-]
+product_patterns = [pattern for _, _, pattern in ENABLED_PRODUCTS]
 running_snow_cm = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
+needs_snow_accum = any(k in ('conus_snow_accum', 'ne_snow_accum') for k, _, _ in ENABLED_PRODUCTS)
 
 for h in HOURS:
     print(f'Generating Hour {h}...')
     img = get_hour_image(h)
-    running_snow_cm = running_snow_cm.add(snow_increment_cm(img, CONUS_REGION)).rename('snow_total_cm')
-    tasks = [
-        ('nh_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NH_THUMB_REGION, 'nh_z500a')),
-        ('na_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NA_THUMB_REGION, 'na_z500a')),
-        ('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, CONUS_THUMB_REGION, 'conus_mslp_ptype')),
-        ('ne_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, NE_THUMB_REGION, 'ne_mslp_ptype')),
-        ('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)),
-        ('conus_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s, CONUS_THUMB_REGION, 'conus_snow_accum')),
-        ('ne_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s, NE_THUMB_REGION, 'ne_snow_accum')),
-    ]
+    if needs_snow_accum:
+        running_snow_cm = running_snow_cm.add(snow_increment_cm(img, CONUS_REGION)).rename('snow_total_cm')
+
+    tasks = []
+    enabled_keys = {k for k, _, _ in ENABLED_PRODUCTS}
+    if 'nh_z500a' in enabled_keys:
+        tasks.append(('nh_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NH_THUMB_REGION, 'nh_z500a')))
+    if 'na_z500a' in enabled_keys:
+        tasks.append(('na_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NA_THUMB_REGION, 'na_z500a')))
+    if 'conus_mslp_ptype' in enabled_keys:
+        tasks.append(('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, CONUS_THUMB_REGION, 'conus_mslp_ptype')))
+    if 'ne_mslp_ptype' in enabled_keys:
+        tasks.append(('ne_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, NE_THUMB_REGION, 'ne_mslp_ptype')))
+    if 'conus_vort500' in enabled_keys:
+        tasks.append(('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)))
+    if 'conus_snow_accum' in enabled_keys:
+        tasks.append(('conus_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s, CONUS_THUMB_REGION, 'conus_snow_accum')))
+    if 'ne_snow_accum' in enabled_keys:
+        tasks.append(('ne_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s, NE_THUMB_REGION, 'ne_snow_accum')))
     with ThreadPoolExecutor(max_workers=EXPORT_WORKERS) as pool:
         future_to_name = {pool.submit(fn): name for name, fn in tasks}
         for future in as_completed(future_to_name):
@@ -1138,6 +1176,9 @@ else:
 
 
 # --- 5. BUILD INTERFACE ---
+product_options_html = '\n'.join(
+    [f'                <option value="{key}">{label}</option>' for key, label, _ in ENABLED_PRODUCTS]
+)
 html = f"""
 <!DOCTYPE html>
 <html>
@@ -1224,13 +1265,7 @@ html = f"""
         <div class="row">
             <label for="product">Map:</label>
             <select id="product">
-                <option value="nh_z500a">NH 500mb Height Anomaly</option>
-                <option value="na_z500a">North America 500mb Height Anomaly</option>
-                <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
-                <option value="ne_mslp_ptype">Northeast MSLP + P-Type</option>
-                <option value="conus_vort500">CONUS 500mb Vorticity</option>
-                <option value="conus_snow_accum">CONUS Snowfall Accumulation</option>
-                <option value="ne_snow_accum">Northeast Snowfall Accumulation</option>
+{product_options_html}
             </select>
             <button id="prevBtn">Prev</button>
             <span id="label">Hour ---</span>

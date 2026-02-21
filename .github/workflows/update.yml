@@ -19,6 +19,41 @@ on:
         required: false
         default: ""
         type: string
+      run_nh_z500a:
+        description: "Generate NH 500mb anomaly"
+        required: false
+        default: true
+        type: boolean
+      run_na_z500a:
+        description: "Generate NA 500mb anomaly"
+        required: false
+        default: true
+        type: boolean
+      run_conus_mslp_ptype:
+        description: "Generate CONUS MSLP + P-Type"
+        required: false
+        default: true
+        type: boolean
+      run_ne_mslp_ptype:
+        description: "Generate Northeast MSLP + P-Type"
+        required: false
+        default: true
+        type: boolean
+      run_conus_vort500:
+        description: "Generate CONUS 500mb vorticity"
+        required: false
+        default: true
+        type: boolean
+      run_conus_snow_accum:
+        description: "Generate CONUS snowfall accumulation"
+        required: false
+        default: true
+        type: boolean
+      run_ne_snow_accum:
+        description: "Generate Northeast snowfall accumulation"
+        required: false
+        default: true
+        type: boolean
   
 concurrency:
   group: wn2-pages
@@ -55,6 +90,13 @@ jobs:
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
           FAST_RENDER: ${{ github.event_name == 'schedule' && '1' || '' }}
           EXPORT_WORKERS: ${{ github.event_name == 'schedule' && '2' || '2' }}
+          WN2_RUN_NH_Z500A: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_nh_z500a == 'true' && '1' || '') }}
+          WN2_RUN_NA_Z500A: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_na_z500a == 'true' && '1' || '') }}
+          WN2_RUN_CONUS_MSLP_PTYPE: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_conus_mslp_ptype == 'true' && '1' || '') }}
+          WN2_RUN_NE_MSLP_PTYPE: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_ne_mslp_ptype == 'true' && '1' || '') }}
+          WN2_RUN_CONUS_VORT500: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_conus_vort500 == 'true' && '1' || '') }}
+          WN2_RUN_CONUS_SNOW_ACCUM: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_conus_snow_accum == 'true' && '1' || '') }}
+          WN2_RUN_NE_SNOW_ACCUM: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_ne_snow_accum == 'true' && '1' || '') }}
         run: python main.py
 
       - name: Deploy to GitHub Pages
