@@ -133,7 +133,7 @@ ANOMALY_PALETTE = [
 ]
 VORTICITY_PALETTE = ['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f']
 RAIN_RATE_PALETTE = ['#a9ee80', '#7ad35a', '#4eb744', '#2f9637', '#f7ea00', '#ffbf00', '#ff8a00', '#ff4200', '#b70000', '#c21cff']
-SNOW_RATE_PALETTE = ['#e9f7ff', '#c7ebff', '#9edcff', '#67c2f3', '#368fcb', '#1d64a4', '#0f3f80', '#4a148c']
+SNOW_RATE_PALETTE = ['#0a1f6f', '#0d2f8f', '#1448b1', '#1f66cc', '#2d84df', '#45a6ef', '#63c2ff']
 FRZR_RATE_PALETTE = ['#ffe5ef', '#ffc4da', '#f78fb9', '#f06292', '#d81b60', '#ad1457', '#880e4f']
 SLEET_RATE_PALETTE = ['#f0d9ff', '#e1bee7', '#ce93d8', '#ab47bc', '#8e24aa', '#6a1b9a']
 SNOW_ACCUM_PALETTE = [
@@ -686,14 +686,44 @@ def _draw_legend(draw, product_key, width, y):
             _draw_ticks(draw, sx, gradient_y, slot_w, bar_h, [0.1, 0.3, 1, 3, 6, 11, 24, 38], 0.1, 38.0, tick_font)
 
 
-def annotate_map_file(out_file, product_key, hour):
+def _lonlat_to_image_xy(lon, lat, region, width, height):
+    if lon is None or lat is None or not region or len(region) != 4:
+        return None
+    west, south, east, north = region
+    if north <= south:
+        return None
+
+    lon_f = float(lon)
+    lat_f = float(lat)
+    lat_f = max(south, min(north, lat_f))
+
+    if east > west:
+        span = east - west
+        lon_norm = (lon_f - west) / span
+    else:
+        span = (east + 360.0) - west
+        wrapped = lon_f
+        if wrapped < west:
+            wrapped += 360.0
+        lon_norm = (wrapped - west) / span
+
+    lon_norm = max(0.0, min(1.0, lon_norm))
+    y_norm = (north - lat_f) / (north - south)
+    y_norm = max(0.0, min(1.0, y_norm))
+
+    x = int(round(lon_norm * (width - 1)))
+    y = int(round(y_norm * (height - 1)))
+    return x, y
+
+
+def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=None):
     from PIL import Image, ImageDraw
 
     product_titles = {
         'nh_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly (m) | Northern Hemisphere',
         'na_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly (m) | North America',
-        'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + 500-hPa Height (dam) + Precip Type | CONUS',
-        'ne_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + 500-hPa Height (dam) + Precip Type | Northeast',
+        'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | CONUS',
+        'ne_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | Northeast',
         'conus_vort500': 'WN2 0.25 deg | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
         'conus_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) + MSLP (hPa) | CONUS',
         'ne_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) + MSLP (hPa) | Northeast',
@@ -704,6 +734,44 @@ def annotate_map_file(out_file, product_key, hour):
 
     with Image.open(out_file) as src:
         img = src.convert('RGB')
+        if map_region is not None and low_center:
+            marker_xy = _lonlat_to_image_xy(
+                low_center.get('lon'),
+                low_center.get('lat'),
+                map_region,
+                img.width,
+                img.height,
+            )
+            if marker_xy is not None:
+                marker_draw = ImageDraw.Draw(img)
+                marker_font = load_font(60 if img.width >= 1300 else 52, bold=True)
+                value_font = load_font(28 if img.width >= 1300 else 24, bold=True)
+                x, y = marker_xy
+                l_tw, l_th = _text_size(marker_draw, 'L', marker_font)
+                l_x = int(round(x - l_tw / 2))
+                l_y = int(round(y - l_th / 2))
+                l_x = max(4, min(img.width - l_tw - 4, l_x))
+                l_y = max(4, min(img.height - l_th - 4, l_y))
+                try:
+                    marker_draw.text((l_x, l_y), 'L', fill=(214, 28, 28), font=marker_font, stroke_width=2, stroke_fill=(20, 20, 20))
+                except TypeError:
+                    marker_draw.text((l_x, l_y), 'L', fill=(214, 28, 28), font=marker_font)
+
+                mb = low_center.get('mb')
+                if mb is not None:
+                    mb_text = f'{int(round(float(mb)))} mb'
+                    mb_tw, mb_th = _text_size(marker_draw, mb_text, value_font)
+                    mb_x = l_x + l_tw + 8
+                    mb_y = l_y + max(0, (l_th - mb_th) // 2)
+                    if mb_x + mb_tw > img.width - 4:
+                        mb_x = max(4, l_x - mb_tw - 8)
+                    mb_x = max(4, min(img.width - mb_tw - 4, mb_x))
+                    mb_y = max(4, min(img.height - mb_th - 4, mb_y))
+                    try:
+                        marker_draw.text((mb_x, mb_y), mb_text, fill=(214, 28, 28), font=value_font, stroke_width=2, stroke_fill=(20, 20, 20))
+                    except TypeError:
+                        marker_draw.text((mb_x, mb_y), mb_text, fill=(214, 28, 28), font=value_font)
+
         legend_h = 0
         if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
             legend_h = 180
@@ -929,6 +997,44 @@ def derive_precip_phase(img, region_geom):
     return precip_rate_sm, precip_6h_mm, rain, snow, freezing_rain, sleet
 
 
+def find_low_center(mslp_hpa, region_geom, scale_m=50000):
+    try:
+        min_stats = mslp_hpa.reduceRegion(
+            reducer=ee.Reducer.min(),
+            geometry=region_geom,
+            scale=scale_m,
+            bestEffort=True,
+            maxPixels=1e9,
+            tileScale=4,
+        ).getInfo() or {}
+        min_val = min_stats.get(WN2_MSLP_BAND)
+        if min_val is None:
+            return None
+
+        min_val = float(min_val)
+        min_mask = mslp_hpa.lte(min_val + 0.08).selfMask()
+        lonlat = ee.Image.pixelLonLat().updateMask(min_mask).reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=region_geom,
+            scale=scale_m,
+            bestEffort=True,
+            maxPixels=1e9,
+            tileScale=4,
+        ).getInfo() or {}
+        lon = lonlat.get('longitude')
+        lat = lonlat.get('latitude')
+        if lon is None or lat is None:
+            return {'mb': int(round(min_val))}
+        return {
+            'lon': float(lon),
+            'lat': float(lat),
+            'mb': int(round(min_val)),
+        }
+    except Exception as e:
+        print(f'[{ts()}] Low-center detection skipped: {e}')
+        return None
+
+
 def snow_increment_cm(img, region_geom):
     precip_rate_sm, precip_6h_mm, _, snow, _, _ = derive_precip_phase(img, region_geom)
     robust_snow = snow.And(precip_rate_sm.gt(0.2))
@@ -989,13 +1095,7 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
         color='#2a2a2a',
         opacity=0.9,
     )
-    z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(work_geom)
-    z500_contours = contour_overlay(
-        z500_height_dam,
-        interval=6,
-        color='#444444',
-        opacity=0.82,
-    )
+    low_center = find_low_center(mslp_hpa, work_geom)
 
     composite = ee.ImageCollection([
         basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6', land_fc=land_fc),
@@ -1004,14 +1104,13 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
         frz_layer,
         sleet_layer,
         mslp_contours,
-        z500_contours,
         border_overlay(include_states=True, state_names=state_names),
     ]).mosaic()
 
     out_file = f'{OUTPUT}/{key}_{h:03d}.jpg'
     dims = NE_DIMS if key.startswith('ne_') else CONUS_DIMS
     export_composite(composite, out_file, region, dimensions=dims)
-    annotate_map_file(out_file, key, h)
+    annotate_map_file(out_file, key, h, map_region=region, low_center=low_center)
 
 
 def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, key='conus_snow_accum'):
