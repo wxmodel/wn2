@@ -109,12 +109,20 @@ if FAST_RENDER:
     ANOMALY_DIMS = '980x720'
     CONUS_DIMS = '1200x860'
     NE_DIMS = '1100x900'
+    PTYPE_CONUS_DIMS = '1320x960'
+    PTYPE_NE_DIMS = '1200x980'
+    SNOW_CONUS_DIMS = '1320x960'
+    SNOW_NE_DIMS = '1200x980'
     NH_SOURCE_DIMS = '1800x360'
     NH_POLAR_DIMS = 920
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
     NE_DIMS = '1200x980'
+    PTYPE_CONUS_DIMS = '1600x1140'
+    PTYPE_NE_DIMS = '1400x1120'
+    SNOW_CONUS_DIMS = '1600x1140'
+    SNOW_NE_DIMS = '1400x1120'
     NH_SOURCE_DIMS = '2200x440'
     NH_POLAR_DIMS = 1080
 
@@ -460,13 +468,13 @@ def pseudo_z500_anomaly_m(height_dam, radius_px=24):
 
 def shrink_dimensions(dimensions):
     if isinstance(dimensions, int):
-        return max(500, int(dimensions * 0.7))
+        return max(500, int(dimensions * 0.82))
     if isinstance(dimensions, str) and 'x' in dimensions:
         w_str, h_str = dimensions.lower().split('x', 1)
         try:
             w = int(w_str)
             h = int(h_str)
-            return f'{max(500, int(w * 0.7))}x{max(400, int(h * 0.7))}'
+            return f'{max(500, int(w * 0.82))}x{max(400, int(h * 0.82))}'
         except ValueError:
             return dimensions
     return dimensions
@@ -814,7 +822,7 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
 
         footer_text = f'Run: {run_date} | Source: WeatherNext2 (Earth Engine)'
         draw.text((12, img.height + header_h + legend_h + 2), footer_text, fill=(35, 35, 35), font=footer_font)
-        canvas.save(out_file, format='JPEG', quality=95)
+        canvas.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 
 def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
@@ -865,7 +873,7 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
         draw.line((cx, cy, x2, y2), fill=(120, 120, 120), width=1)
     draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(35, 35, 35), width=3)
 
-    out_img.save(out_file, format='JPEG', quality=95)
+    out_img.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 
 def stitch_horizontal(left_file, right_file, out_file):
@@ -885,7 +893,7 @@ def stitch_horizontal(left_file, right_file, out_file):
     stitched = Image.new('RGB', (left.width + right.width, height))
     stitched.paste(left, (0, 0))
     stitched.paste(right, (left.width, 0))
-    stitched.save(out_file, format='JPEG', quality=95)
+    stitched.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 
 def export_composite(composite, out_file, region, dimensions=1600, scale=None, crs=None):
@@ -997,6 +1005,20 @@ def derive_precip_phase(img, region_geom):
     return precip_rate_sm, precip_6h_mm, rain, snow, freezing_rain, sleet
 
 
+def smooth_precip_type_masks(precip_rate, rain, snow, freezing_rain, sleet):
+    precip_mask = precip_rate.gt(0.25)
+    ptype = ee.Image.constant(0).updateMask(precip_mask)
+    ptype = ptype.where(snow, 1)
+    ptype = ptype.where(freezing_rain, 2)
+    ptype = ptype.where(sleet, 3)
+    ptype_sm = ptype.focalMode(1, 'circle', 'pixels').updateMask(precip_mask)
+    rain_sm = ptype_sm.eq(0).And(precip_mask)
+    snow_sm = ptype_sm.eq(1).And(precip_mask)
+    frz_sm = ptype_sm.eq(2).And(precip_mask)
+    sleet_sm = ptype_sm.eq(3).And(precip_mask)
+    return rain_sm, snow_sm, frz_sm, sleet_sm
+
+
 def find_low_center(mslp_hpa, region_geom, scale_m=50000):
     try:
         min_stats = mslp_hpa.reduceRegion(
@@ -1070,21 +1092,23 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
     land_fc = NE_STATES if is_ne else None
     work_geom = region_geom.difference(NE_EXCLUDED_STATES.geometry(), maxError=1000) if is_ne else region_geom
     precip_rate, _, rain, snow, freezing_rain, sleet = derive_precip_phase(img, work_geom)
+    rain_sm, snow_sm, frz_sm, sleet_sm = smooth_precip_type_masks(precip_rate, rain, snow, freezing_rain, sleet)
+    precip_rate_vis = precip_rate.resample('bilinear').focalMean(1, 'circle', 'pixels')
 
-    rain_layer = precip_rate.updateMask(rain).visualize(
-        min=0.1, max=25,
+    rain_layer = precip_rate_vis.updateMask(rain_sm).visualize(
+        min=0.05, max=25,
         palette=RAIN_RATE_PALETTE,
     )
-    snow_layer = precip_rate.updateMask(snow).visualize(
-        min=0.1, max=25,
+    snow_layer = precip_rate_vis.updateMask(snow_sm).visualize(
+        min=0.05, max=25,
         palette=SNOW_RATE_PALETTE,
     )
-    frz_layer = precip_rate.updateMask(freezing_rain).visualize(
-        min=0.1, max=25,
+    frz_layer = precip_rate_vis.updateMask(frz_sm).visualize(
+        min=0.05, max=25,
         palette=FRZR_RATE_PALETTE,
     )
-    sleet_layer = precip_rate.updateMask(sleet).visualize(
-        min=0.1, max=25,
+    sleet_layer = precip_rate_vis.updateMask(sleet_sm).visualize(
+        min=0.05, max=25,
         palette=SLEET_RATE_PALETTE,
     )
 
@@ -1108,7 +1132,7 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
     ]).mosaic()
 
     out_file = f'{OUTPUT}/{key}_{h:03d}.jpg'
-    dims = NE_DIMS if key.startswith('ne_') else CONUS_DIMS
+    dims = PTYPE_NE_DIMS if key.startswith('ne_') else PTYPE_CONUS_DIMS
     export_composite(composite, out_file, region, dimensions=dims)
     annotate_map_file(out_file, key, h, map_region=region, low_center=low_center)
 
@@ -1120,8 +1144,8 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
     land_fc = NE_STATES if is_ne else None
     work_geom = region_geom.difference(NE_EXCLUDED_STATES.geometry(), maxError=1000) if is_ne else region_geom
     snow_total_in = running_snow_cm.divide(2.54).clip(work_geom)
-
-    snow_layer = snow_accum_layer(snow_total_in)
+    snow_total_vis = snow_total_in.resample('bilinear').focalMean(1, 'circle', 'pixels')
+    snow_layer = snow_accum_layer(snow_total_vis)
     mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(work_geom)
     mslp_contours = contour_overlay(mslp_hpa, interval=3, color='#2f2f2f', opacity=0.9)
     z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(work_geom)
@@ -1136,7 +1160,7 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
     ]).mosaic()
 
     out_file = f'{OUTPUT}/{key}_{h:03d}.jpg'
-    dims = NE_DIMS if key.startswith('ne_') else CONUS_DIMS
+    dims = SNOW_NE_DIMS if key.startswith('ne_') else SNOW_CONUS_DIMS
     export_composite(composite, out_file, region, dimensions=dims)
     annotate_map_file(out_file, key, h)
 
