@@ -58,8 +58,8 @@ WORLD_REGION = ee.Geometry.Rectangle([-180.0, -89.9, 180.0, 89.9], geodesic=Fals
 NH_THUMB_REGION = [-180.0, 8.0, 20.0, 88.0]
 NA_THUMB_REGION = [-170.0, 8.0, -40.0, 82.0]
 CONUS_THUMB_REGION = [-127.0, 22.0, -65.0, 50.0]
-# Northeast-only domain (excludes VA/NC by southern boundary)
-NE_THUMB_REGION = [-82.5, 39.2, -66.0, 48.8]
+# Northeast-only domain (excludes VA/NC by southern boundary; caps near tip of Maine)
+NE_THUMB_REGION = [-82.5, 39.2, -66.0, 47.6]
 
 # Boundaries overlays
 COUNTRIES = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
