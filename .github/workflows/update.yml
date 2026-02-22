@@ -1,6 +1,9 @@
 name: WeatherNext Auto-Runner
 
 on:
+  push:
+    branches:
+      - main
   schedule:
     # Run 30 minutes after typical WN2 EE publish times
     - cron: "0 2 * * *"   # after 18z cycle
@@ -85,18 +88,18 @@ jobs:
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
           EE_PROJECT: ${{ secrets.EE_PROJECT }}
-          HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || '' }}
+          HOURS_MAX: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '240' || '' }}
           HOURS_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '' }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
-          FAST_RENDER: ${{ github.event_name == 'schedule' && '1' || '' }}
-          EXPORT_WORKERS: ${{ github.event_name == 'schedule' && '2' || '2' }}
-          WN2_RUN_NH_Z500A: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_nh_z500a == 'true' && '1' || '') }}
-          WN2_RUN_NA_Z500A: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_na_z500a == 'true' && '1' || '') }}
-          WN2_RUN_CONUS_MSLP_PTYPE: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_conus_mslp_ptype == 'true' && '1' || '') }}
-          WN2_RUN_NE_MSLP_PTYPE: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_ne_mslp_ptype == 'true' && '1' || '') }}
-          WN2_RUN_CONUS_VORT500: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_conus_vort500 == 'true' && '1' || '') }}
-          WN2_RUN_CONUS_SNOW_ACCUM: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_conus_snow_accum == 'true' && '1' || '') }}
-          WN2_RUN_NE_SNOW_ACCUM: ${{ github.event_name == 'schedule' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_ne_snow_accum == 'true' && '1' || '') }}
+          FAST_RENDER: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '1' || '' }}
+          EXPORT_WORKERS: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '2' || '2' }}
+          WN2_RUN_NH_Z500A: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.run_nh_z500a == 'true' && '1' || '') || '1' }}
+          WN2_RUN_NA_Z500A: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.run_na_z500a == 'true' && '1' || '') || '1' }}
+          WN2_RUN_CONUS_MSLP_PTYPE: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.run_conus_mslp_ptype == 'true' && '1' || '') || '1' }}
+          WN2_RUN_NE_MSLP_PTYPE: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.run_ne_mslp_ptype == 'true' && '1' || '') || '1' }}
+          WN2_RUN_CONUS_VORT500: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.run_conus_vort500 == 'true' && '1' || '') || '1' }}
+          WN2_RUN_CONUS_SNOW_ACCUM: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.run_conus_snow_accum == 'true' && '1' || '') || '1' }}
+          WN2_RUN_NE_SNOW_ACCUM: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.run_ne_snow_accum == 'true' && '1' || '') || '1' }}
         run: python main.py
 
       - name: Deploy to GitHub Pages
