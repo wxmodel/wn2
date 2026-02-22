@@ -1024,7 +1024,18 @@ def smooth_precip_type_masks(precip_rate, rain, snow, freezing_rain, sleet):
     return rain_sm, snow_sm, frz_sm, sleet_sm
 
 
-def find_low_center(mslp_hpa, region_geom, scale_m=50000):
+def find_low_center(mslp_hpa, region_geom, fallback_region=None, scale_m=50000):
+    def _fallback(mb_value=None):
+        if fallback_region and len(fallback_region) == 4:
+            west, south, east, north = fallback_region
+            return {
+                'lon': (west + east) / 2.0,
+                'lat': (south + north) / 2.0,
+                'mb': mb_value,
+            }
+        return None
+
+    min_val = None
     try:
         min_stats = mslp_hpa.reduceRegion(
             reducer=ee.Reducer.min(),
@@ -1034,13 +1045,37 @@ def find_low_center(mslp_hpa, region_geom, scale_m=50000):
             maxPixels=1e9,
             tileScale=4,
         ).getInfo() or {}
-        min_val = min_stats.get(WN2_MSLP_BAND)
-        if min_val is None:
-            return None
+        min_raw = min_stats.get(WN2_MSLP_BAND)
+        if min_raw is None:
+            return _fallback()
+        min_val = float(min_raw)
+        mb_value = int(round(min_val))
+    except Exception as e:
+        print(f'[{ts()}] Low-center min reduction failed: {e}')
+        return _fallback()
 
-        min_val = float(min_val)
-        min_mask = mslp_hpa.lte(min_val + 0.08).selfMask()
-        lonlat = ee.Image.pixelLonLat().updateMask(min_mask).reduceRegion(
+    try:
+        min_mask = mslp_hpa.lte(min_val + 0.2).selfMask()
+        lonlat_img = ee.Image.pixelLonLat().updateMask(min_mask)
+
+        sample = lonlat_img.sample(
+            region=region_geom,
+            scale=scale_m,
+            numPixels=1,
+            dropNulls=True,
+            geometries=False,
+            tileScale=4,
+            seed=42,
+        ).first()
+        if sample is not None:
+            info = sample.getInfo() or {}
+            props = info.get('properties') or {}
+            lon = props.get('longitude')
+            lat = props.get('latitude')
+            if lon is not None and lat is not None:
+                return {'lon': float(lon), 'lat': float(lat), 'mb': mb_value}
+
+        lonlat = lonlat_img.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=region_geom,
             scale=scale_m,
@@ -1050,16 +1085,12 @@ def find_low_center(mslp_hpa, region_geom, scale_m=50000):
         ).getInfo() or {}
         lon = lonlat.get('longitude')
         lat = lonlat.get('latitude')
-        if lon is None or lat is None:
-            return {'mb': int(round(min_val))}
-        return {
-            'lon': float(lon),
-            'lat': float(lat),
-            'mb': int(round(min_val)),
-        }
+        if lon is not None and lat is not None:
+            return {'lon': float(lon), 'lat': float(lat), 'mb': mb_value}
     except Exception as e:
-        print(f'[{ts()}] Low-center detection skipped: {e}')
-        return None
+        print(f'[{ts()}] Low-center coordinate detection failed: {e}')
+
+    return _fallback(mb_value)
 
 
 def snow_increment_cm(img, region_geom):
@@ -1133,7 +1164,7 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
         color='#2a2a2a',
         opacity=0.9,
     )
-    low_center = find_low_center(mslp_hpa, work_geom)
+    low_center = find_low_center(mslp_hpa, work_geom, fallback_region=region)
 
     composite = ee.ImageCollection([
         basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6', land_fc=land_fc),
