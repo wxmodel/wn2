@@ -61,7 +61,7 @@ CONUS_THUMB_REGION = [-127.0, 22.0, -65.0, 50.0]
 # Northeast-only domain (excludes VA/NC by southern boundary; caps near tip of Maine)
 NE_THUMB_REGION = [-82.5, 39.2, -66.0, 47.6]
 # New England zoom snowfall domain: Delmarva, NJ, NYC/LI, southern New England/Boston corridor
-NE_ZOOM_SNOW_THUMB_REGION = [-77.8, 38.0, -69.0, 43.8]
+NE_ZOOM_SNOW_THUMB_REGION = [-76.9, 38.0, -70.0, 43.3]
 
 # Boundaries overlays
 COUNTRIES = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
