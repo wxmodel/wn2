@@ -1434,14 +1434,45 @@ cleanup_old_products()
 failures = []
 successful_exports = 0
 product_patterns = [pattern for _, _, pattern in ENABLED_PRODUCTS]
-running_snow_cm = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
 needs_snow_accum = any(k in ('conus_snow_accum', 'ne_snow_accum') for k, _, _ in ENABLED_PRODUCTS)
+snow_accum_by_hour = {}
+
+if needs_snow_accum:
+    zero_snow = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
+    selected_hours = sorted(set(HOURS))
+    max_selected_hour = selected_hours[-1]
+    accum_hours = sorted([hh for hh in AVAILABLE_HOURS if 0 <= hh <= max_selected_hour])
+    if not accum_hours:
+        accum_hours = selected_hours
+
+    running_snow_cm = zero_snow
+    running_by_available_hour = {0: zero_snow}
+    for hh in accum_hours:
+        if hh <= 0:
+            running_by_available_hour[hh] = running_snow_cm
+            continue
+        step_img = get_hour_image(hh)
+        running_snow_cm = running_snow_cm.add(snow_increment_cm(step_img, CONUS_REGION)).rename('snow_total_cm')
+        running_by_available_hour[hh] = running_snow_cm
+
+    for sh in selected_hours:
+        eligible = [hh for hh in running_by_available_hour.keys() if hh <= sh]
+        if eligible:
+            snow_accum_by_hour[sh] = running_by_available_hour[max(eligible)]
+        else:
+            snow_accum_by_hour[sh] = zero_snow
+    print(
+        f'[{ts()}] Snow accumulation precompute: '
+        f'available_steps={len(accum_hours)}, selected_frames={len(selected_hours)}, '
+        f'max_hour={max_selected_hour}.'
+    )
+else:
+    zero_snow = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
 
 for h in HOURS:
     print(f'Generating Hour {h}...')
     img = get_hour_image(h)
-    if needs_snow_accum:
-        running_snow_cm = running_snow_cm.add(snow_increment_cm(img, CONUS_REGION)).rename('snow_total_cm')
+    snow_for_hour = snow_accum_by_hour.get(h, zero_snow)
 
     tasks = []
     enabled_keys = {k for k, _, _ in ENABLED_PRODUCTS}
@@ -1456,9 +1487,9 @@ for h in HOURS:
     if 'conus_vort500' in enabled_keys:
         tasks.append(('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)))
     if 'conus_snow_accum' in enabled_keys:
-        tasks.append(('conus_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s, CONUS_THUMB_REGION, 'conus_snow_accum')))
+        tasks.append(('conus_snow_accum', lambda i=img, hh=h, s=snow_for_hour: generate_snow_accum_map(i, hh, s, CONUS_THUMB_REGION, 'conus_snow_accum')))
     if 'ne_snow_accum' in enabled_keys:
-        tasks.append(('ne_snow_accum', lambda i=img, hh=h, s=running_snow_cm: generate_snow_accum_map(i, hh, s, NE_THUMB_REGION, 'ne_snow_accum')))
+        tasks.append(('ne_snow_accum', lambda i=img, hh=h, s=snow_for_hour: generate_snow_accum_map(i, hh, s, NE_THUMB_REGION, 'ne_snow_accum')))
     with ThreadPoolExecutor(max_workers=EXPORT_WORKERS) as pool:
         future_to_name = {pool.submit(fn): name for name, fn in tasks}
         for future in as_completed(future_to_name):
