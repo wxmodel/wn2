@@ -659,15 +659,20 @@ def _draw_legend(draw, product_key, width, y):
         _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
         draw.text((bar_x, y + 2), 'Accumulated Snowfall Total (in, 10:1 ratio)', fill=(22, 22, 22), font=label_font)
         snow_segments = [
-            (0.1, 1.0, ['#f7fcff', '#e8f5ff']),
-            (1.0, 5.0, ['#d7edff', '#a9d5ff', '#78b7ff', '#4b8de6', '#2a5fbf']),
-            (5.0, 10.0, ['#d9c8ff', '#b596ff', '#9164e8', '#7038c8', '#5420a8']),
-            (10.0, 14.0, ['#f9bddf', '#f58bc8', '#ec56b0', '#d92f95', '#b81479']),
-            (14.0, 24.0, ['#d7ffff', '#a8f7f7', '#73e8ee', '#3fd8e1', '#12c7d4', '#00b7c5']),
-            (24.0, 30.0, ['#b8f5a8', '#8fe083', '#5fca57', '#35ae34', '#1f8e28', '#156d1f']),
+            (1.0, 4.0, ['#d7eeff', '#7ec7ff', '#2f82d8']),
+            (4.0, 6.0, ['#2f82d8', '#1f5faf', '#123d82']),
+            (6.0, 8.0, ['#4b0f8f', '#5e1ea8', '#7435bf']),
+            (8.0, 10.0, ['#7435bf', '#8c55cf', '#a678df']),
+            (10.0, 12.0, ['#a678df', '#b996ea', '#ceb8f5']),
+            (12.0, 14.0, ['#b1006e', '#cb1f84', '#df3d98']),
+            (14.0, 18.0, ['#df3d98', '#ea63ae', '#f08cc6']),
+            (18.0, 20.0, ['#f08cc6', '#f5add8', '#f9c8e6']),
+            (20.0, 22.0, ['#d8ffff', '#a8f8ff', '#7beeff']),
+            (22.0, 24.0, ['#7beeff', '#45dff0', '#16c8dc']),
+            (24.0, 26.0, ['#16c8dc', '#00acc5', '#007c98']),
         ]
-        _draw_segmented_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, snow_segments, 0.1, 30.0)
-        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [0.1, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 18, 24, 25, 27, 30], 0.1, 30.0, tick_font)
+        _draw_segmented_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, snow_segments, 1.0, 26.0)
+        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [1, 4, 6, 8, 10, 12, 14, 18, 20, 22, 24, 26], 1.0, 26.0, tick_font)
         return
 
     if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
@@ -1075,13 +1080,22 @@ def range_gradient_layer(field, low, high, palette, include_high=False):
 
 def snow_accum_layer(snow_total_in):
     return ee.ImageCollection([
-        range_gradient_layer(snow_total_in, 0.1, 1.0, ['#f7fcff', '#e8f5ff']),
-        range_gradient_layer(snow_total_in, 1.0, 5.0, ['#d7edff', '#a9d5ff', '#78b7ff', '#4b8de6', '#2a5fbf']),
-        range_gradient_layer(snow_total_in, 5.0, 10.0, ['#d9c8ff', '#b596ff', '#9164e8', '#7038c8', '#5420a8']),
-        range_gradient_layer(snow_total_in, 10.0, 14.0, ['#f9bddf', '#f58bc8', '#ec56b0', '#d92f95', '#b81479']),
-        range_gradient_layer(snow_total_in, 14.0, 24.0, ['#d7ffff', '#a8f7f7', '#73e8ee', '#3fd8e1', '#12c7d4', '#00b7c5']),
-        range_gradient_layer(snow_total_in, 24.0, 30.0, ['#b8f5a8', '#8fe083', '#5fca57', '#35ae34', '#1f8e28', '#156d1f'], include_high=True),
-        snow_total_in.gt(30.0).selfMask().visualize(palette=['#156d1f']),
+        # 1-6": blue family (light -> dark)
+        range_gradient_layer(snow_total_in, 1.0, 4.0, ['#d7eeff', '#7ec7ff', '#2f82d8']),
+        range_gradient_layer(snow_total_in, 4.0, 6.0, ['#2f82d8', '#1f5faf', '#123d82']),
+        # 6-12": purple family (dark -> light)
+        range_gradient_layer(snow_total_in, 6.0, 8.0, ['#4b0f8f', '#5e1ea8', '#7435bf']),
+        range_gradient_layer(snow_total_in, 8.0, 10.0, ['#7435bf', '#8c55cf', '#a678df']),
+        range_gradient_layer(snow_total_in, 10.0, 12.0, ['#a678df', '#b996ea', '#ceb8f5']),
+        # 12-20": pink family (dark -> light)
+        range_gradient_layer(snow_total_in, 12.0, 14.0, ['#b1006e', '#cb1f84', '#df3d98']),
+        range_gradient_layer(snow_total_in, 14.0, 18.0, ['#df3d98', '#ea63ae', '#f08cc6']),
+        range_gradient_layer(snow_total_in, 18.0, 20.0, ['#f08cc6', '#f5add8', '#f9c8e6']),
+        # 20-26": cyan family (light -> dark)
+        range_gradient_layer(snow_total_in, 20.0, 22.0, ['#d8ffff', '#a8f8ff', '#7beeff']),
+        range_gradient_layer(snow_total_in, 22.0, 24.0, ['#7beeff', '#45dff0', '#16c8dc']),
+        range_gradient_layer(snow_total_in, 24.0, 26.0, ['#16c8dc', '#00acc5', '#007c98'], include_high=True),
+        snow_total_in.gt(26.0).selfMask().visualize(palette=['#007c98']),
     ]).mosaic()
 
 
