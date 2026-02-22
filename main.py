@@ -144,6 +144,18 @@ RAIN_RATE_PALETTE = ['#a9ee80', '#7ad35a', '#4eb744', '#2f9637', '#f7ea00', '#ff
 SNOW_RATE_PALETTE = ['#0a1f6f', '#0d2f8f', '#1448b1', '#1f66cc', '#2d84df', '#45a6ef', '#63c2ff']
 FRZR_RATE_PALETTE = ['#ffe5ef', '#ffc4da', '#f78fb9', '#f06292', '#d81b60', '#ad1457', '#880e4f']
 SLEET_RATE_PALETTE = ['#f0d9ff', '#e1bee7', '#ce93d8', '#ab47bc', '#8e24aa', '#6a1b9a']
+INCH_TO_MM = 25.4
+SNOW_PTYPE_SEGMENTS_MMHR = [
+    # 0.0-0.5 in/hr (light -> dark blue)
+    (0.0, 0.5 * INCH_TO_MM, ['#d7f2ff', '#8fd3ff', '#3f98ec']),
+    # 0.5-1.0 in/hr (dark blue)
+    (0.5 * INCH_TO_MM, 1.0 * INCH_TO_MM, ['#2b76d1', '#1e5fb8', '#124493']),
+    # 1.0-2.0 in/hr (dark purple)
+    (1.0 * INCH_TO_MM, 2.0 * INCH_TO_MM, ['#4a148c', '#5e2aa8', '#7140bf']),
+    # 2.0-3.0 in/hr (cyan)
+    (2.0 * INCH_TO_MM, 3.0 * INCH_TO_MM, ['#c9ffff', '#63e8f0', '#00c6d8']),
+]
+SNOW_PTYPE_MAX_MMHR = 3.0 * INCH_TO_MM
 SNOW_ACCUM_PALETTE = [
     '#f7fcff', '#e8f5ff',
     '#d7edff', '#a9d5ff', '#78b7ff', '#4b8de6', '#2a5fbf',  # 1-5 blue
@@ -676,7 +688,7 @@ def _draw_legend(draw, product_key, width, y):
         return
 
     if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
-        draw.text((bar_x, y + 2), 'Precip Rate (mm/hr) by Type', fill=(22, 22, 22), font=label_font)
+        draw.text((bar_x, y + 2), 'Precip Rate by Type (mm/hr; Snow bins from in/hr)', fill=(22, 22, 22), font=label_font)
         gap = 16 if width >= 1200 else 10
         slot_w = int((bar_w - 3 * gap) / 4)
         panel_h = 96
@@ -695,8 +707,23 @@ def _draw_legend(draw, product_key, width, y):
             _draw_panel(draw, panel_x0, panel_y0, panel_x1, panel_y1, fill=(242, 242, 242), outline=(130, 130, 130), radius=8)
             draw.text((sx + 2, y + 34), name, fill=(24, 24, 24), font=tick_font)
             gradient_y = y + 58
-            _draw_gradient_bar(draw, sx, gradient_y, slot_w, bar_h, palette)
-            _draw_ticks(draw, sx, gradient_y, slot_w, bar_h, [0.1, 0.3, 1, 3, 6, 11, 24, 38], 0.1, 38.0, tick_font)
+            if name == 'Snow':
+                snow_segments = [(lo, hi, pal) for lo, hi, pal in SNOW_PTYPE_SEGMENTS_MMHR]
+                _draw_segmented_gradient_bar(draw, sx, gradient_y, slot_w, bar_h, snow_segments, 0.0, SNOW_PTYPE_MAX_MMHR)
+                _draw_ticks(
+                    draw,
+                    sx,
+                    gradient_y,
+                    slot_w,
+                    bar_h,
+                    [0.0, 0.5 * INCH_TO_MM, 1.0 * INCH_TO_MM, 2.0 * INCH_TO_MM, 3.0 * INCH_TO_MM],
+                    0.0,
+                    SNOW_PTYPE_MAX_MMHR,
+                    tick_font,
+                )
+            else:
+                _draw_gradient_bar(draw, sx, gradient_y, slot_w, bar_h, palette)
+                _draw_ticks(draw, sx, gradient_y, slot_w, bar_h, [0.1, 0.3, 1, 3, 6, 11, 24, 38], 0.1, 38.0, tick_font)
 
 
 def _lonlat_to_image_xy(lon, lat, region, width, height):
@@ -1011,17 +1038,27 @@ def derive_precip_phase(img, region_geom):
 
 
 def smooth_precip_type_masks(precip_rate, rain, snow, freezing_rain, sleet):
-    precip_mask = precip_rate.gt(0.25)
+    precip_mask = precip_rate.gt(0.2).focalMax(1, 'circle', 'pixels').focalMin(1, 'circle', 'pixels')
     ptype = ee.Image.constant(0).updateMask(precip_mask)
     ptype = ptype.where(snow, 1)
     ptype = ptype.where(freezing_rain, 2)
     ptype = ptype.where(sleet, 3)
-    ptype_sm = ptype.focalMode(1, 'circle', 'pixels').updateMask(precip_mask)
+    ptype_sm = ptype.focalMode(2, 'circle', 'pixels').focalMode(1, 'circle', 'pixels').updateMask(precip_mask)
     rain_sm = ptype_sm.eq(0).And(precip_mask)
     snow_sm = ptype_sm.eq(1).And(precip_mask)
     frz_sm = ptype_sm.eq(2).And(precip_mask)
     sleet_sm = ptype_sm.eq(3).And(precip_mask)
     return rain_sm, snow_sm, frz_sm, sleet_sm
+
+
+def snow_ptype_rate_layer(precip_rate_mmhr, snow_mask):
+    snow_rate = precip_rate_mmhr.updateMask(snow_mask)
+    layers = [
+        range_gradient_layer(snow_rate, low, high, palette, include_high=(i == len(SNOW_PTYPE_SEGMENTS_MMHR) - 1))
+        for i, (low, high, palette) in enumerate(SNOW_PTYPE_SEGMENTS_MMHR)
+    ]
+    layers.append(snow_rate.gt(SNOW_PTYPE_MAX_MMHR).selfMask().visualize(palette=['#00a8c1']))
+    return ee.ImageCollection(layers).mosaic()
 
 
 def find_low_center(mslp_hpa, region_geom, fallback_region=None, scale_m=50000):
@@ -1138,16 +1175,13 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
     work_geom = region_geom.difference(NE_EXCLUDED_STATES.geometry(), maxError=1000) if is_ne else region_geom
     precip_rate, _, rain, snow, freezing_rain, sleet = derive_precip_phase(img, work_geom)
     rain_sm, snow_sm, frz_sm, sleet_sm = smooth_precip_type_masks(precip_rate, rain, snow, freezing_rain, sleet)
-    precip_rate_vis = precip_rate.resample('bilinear').focalMean(1, 'circle', 'pixels')
+    precip_rate_vis = precip_rate.resample('bilinear').focalMean(2, 'circle', 'pixels')
 
     rain_layer = precip_rate_vis.updateMask(rain_sm).visualize(
         min=0.05, max=25,
         palette=RAIN_RATE_PALETTE,
     )
-    snow_layer = precip_rate_vis.updateMask(snow_sm).visualize(
-        min=0.05, max=25,
-        palette=SNOW_RATE_PALETTE,
-    )
+    snow_layer = snow_ptype_rate_layer(precip_rate_vis, snow_sm)
     frz_layer = precip_rate_vis.updateMask(frz_sm).visualize(
         min=0.05, max=25,
         palette=FRZR_RATE_PALETTE,
