@@ -22,6 +22,20 @@ on:
         required: false
         default: ""
         type: string
+      hour_range_preset:
+        description: "Manual range preset (0 to selected hour, using native step)"
+        required: false
+        default: "full"
+        type: choice
+        options:
+          - full
+          - "24"
+          - "36"
+          - "48"
+          - "72"
+          - "120"
+          - "180"
+          - "240"
       run_nh_z500a:
         description: "Generate NH 500mb anomaly"
         required: false
@@ -88,7 +102,7 @@ jobs:
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
           EE_PROJECT: ${{ secrets.EE_PROJECT }}
-          HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || '' }}
+          HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || (github.event_name == 'workflow_dispatch' && github.event.inputs.hour_range_preset != 'full' && github.event.inputs.hour_range_preset || '') }}
           HOURS_LIMIT: ${{ github.event_name == 'push' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '') }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
           FAST_RENDER: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '1' || '' }}
