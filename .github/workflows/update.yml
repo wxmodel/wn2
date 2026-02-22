@@ -71,6 +71,11 @@ on:
         required: false
         default: true
         type: boolean
+      run_ne_zoom_snow_accum:
+        description: "Generate New England zoom snowfall accumulation"
+        required: false
+        default: true
+        type: boolean
   
 concurrency:
   group: wn2-pages
@@ -114,6 +119,7 @@ jobs:
           WN2_RUN_CONUS_VORT500: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_conus_vort500 == 'true' && '1' || '') }}
           WN2_RUN_CONUS_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_conus_snow_accum == 'true' && '1' || '') }}
           WN2_RUN_NE_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_ne_snow_accum == 'true' && '1' || '') }}
+          WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_ne_zoom_snow_accum == 'true' && '1' || '') }}
         run: python main.py
 
       - name: Deploy to GitHub Pages
