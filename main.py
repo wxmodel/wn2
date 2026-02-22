@@ -257,17 +257,20 @@ SNOW_RATE_PALETTE = ['#0a1f6f', '#0d2f8f', '#1448b1', '#1f66cc', '#2d84df', '#45
 FRZR_RATE_PALETTE = ['#ffe5ef', '#ffc4da', '#f78fb9', '#f06292', '#d81b60', '#ad1457', '#880e4f']
 SLEET_RATE_PALETTE = ['#f0d9ff', '#e1bee7', '#ce93d8', '#ab47bc', '#8e24aa', '#6a1b9a']
 INCH_TO_MM = 25.4
+PTYPE_RATE_MIN_MMHR = 0.02
+PTYPE_RATE_MAX_MMHR = 12.0
 SNOW_PTYPE_SEGMENTS_MMHR = [
-    # 0.0-0.5 in/hr (medium -> dark blue)
-    (0.0, 0.5 * INCH_TO_MM, ['#4ea6ff', '#2f84db', '#1f63bf']),
-    # 0.5-1.0 in/hr (dark blue)
-    (0.5 * INCH_TO_MM, 1.0 * INCH_TO_MM, ['#2b76d1', '#1e5fb8', '#0f3a88']),
-    # 1.0-2.0 in/hr (dark purple)
-    (1.0 * INCH_TO_MM, 2.0 * INCH_TO_MM, ['#4a148c', '#5e2aa8', '#7140bf']),
-    # 2.0-3.0 in/hr (cyan)
-    (2.0 * INCH_TO_MM, 3.0 * INCH_TO_MM, ['#b9ffff', '#58e4ef', '#00bfd3']),
+    # 0.00-0.10 in/hr (medium -> darker blue)
+    (0.0, 0.10 * INCH_TO_MM, ['#4ea6ff', '#2f84db', '#1f63bf']),
+    # 0.10-0.25 in/hr (dark blue)
+    (0.10 * INCH_TO_MM, 0.25 * INCH_TO_MM, ['#2b76d1', '#1e5fb8', '#0f3a88']),
+    # 0.25-0.50 in/hr (dark purple)
+    (0.25 * INCH_TO_MM, 0.50 * INCH_TO_MM, ['#4a148c', '#5e2aa8', '#7140bf']),
+    # 0.50-1.00 in/hr (cyan)
+    (0.50 * INCH_TO_MM, 1.00 * INCH_TO_MM, ['#b9ffff', '#58e4ef', '#00bfd3']),
 ]
-SNOW_PTYPE_MAX_MMHR = 3.0 * INCH_TO_MM
+SNOW_PTYPE_MAX_MMHR = 1.0 * INCH_TO_MM
+SNOW_PTYPE_TICKS_MMHR = [0.0, 0.10 * INCH_TO_MM, 0.25 * INCH_TO_MM, 0.50 * INCH_TO_MM, 1.0 * INCH_TO_MM]
 SNOW_ACCUM_STEP_SEGMENTS_IN = [
     (0.1, 2.0, ['#eaf8ff']),
     (2.0, 4.0, ['#cfeeff']),
@@ -830,7 +833,7 @@ def _draw_legend(draw, product_key, width, y):
                     gradient_y,
                     slot_w,
                     bar_h,
-                    [0.0, 0.5 * INCH_TO_MM, 1.0 * INCH_TO_MM, 2.0 * INCH_TO_MM, 3.0 * INCH_TO_MM],
+                    SNOW_PTYPE_TICKS_MMHR,
                     0.0,
                     SNOW_PTYPE_MAX_MMHR,
                     tick_font,
@@ -1183,8 +1186,8 @@ def generate_z500_anomaly_map(img, h, region, prefix):
 def derive_precip_phase(img, region_geom):
     precip_6h_mm = img.select(WN2_PRECIP_6H_BAND).multiply(1000).clip(region_geom)
     precip_rate = precip_6h_mm.divide(6)  # mm/hr
-    precip_rate_sm = precip_rate.focalMean(2, 'circle', 'pixels')
-    precip_mask = precip_rate_sm.gt(0.35)
+    precip_rate_sm = precip_rate.focalMean(1, 'circle', 'pixels')
+    precip_mask = precip_rate_sm.gt(0.12)
 
     t2c = img.select(WN2_T2M_BAND).subtract(273.15).clip(region_geom)
     t850c = img.select(WN2_T850_BAND).subtract(273.15).clip(region_geom)
@@ -1373,16 +1376,16 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
     precip_rate_vis = precip_rate.resample('bilinear').focalMean(2, 'circle', 'pixels')
 
     rain_layer = precip_rate_vis.updateMask(rain_sm).visualize(
-        min=0.05, max=25,
+        min=PTYPE_RATE_MIN_MMHR, max=PTYPE_RATE_MAX_MMHR,
         palette=RAIN_RATE_PALETTE,
     )
     snow_layer = snow_ptype_rate_layer(precip_rate_vis, snow_sm)
     frz_layer = precip_rate_vis.updateMask(frz_sm).visualize(
-        min=0.05, max=25,
+        min=PTYPE_RATE_MIN_MMHR, max=PTYPE_RATE_MAX_MMHR,
         palette=FRZR_RATE_PALETTE,
     )
     sleet_layer = precip_rate_vis.updateMask(sleet_sm).visualize(
-        min=0.05, max=25,
+        min=PTYPE_RATE_MIN_MMHR, max=PTYPE_RATE_MAX_MMHR,
         palette=SLEET_RATE_PALETTE,
     )
 
