@@ -1342,13 +1342,10 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
     snow_total_vis = snow_total_in.resample('bilinear').focalMean(1, 'circle', 'pixels')
     snow_layer = snow_accum_layer(snow_total_vis)
     snow_labels = get_snow_airport_labels(snow_total_in, key)
-    z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(work_geom)
-    z500_contours = contour_overlay(z500_height_dam, interval=6, color='#4a4a4a', opacity=0.76)
 
     composite = ee.ImageCollection([
         basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6', land_fc=land_fc),
         snow_layer,
-        z500_contours,
         border_overlay(include_states=True, state_names=state_names),
     ]).mosaic()
 
