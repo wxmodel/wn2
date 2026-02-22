@@ -84,8 +84,14 @@
         <div class="row">
             <label for="product">Map:</label>
             <select id="product">
+                <option value="nh_z500a">NH 500mb Height Anomaly</option>
+                <option value="na_z500a">North America 500mb Height Anomaly</option>
+                <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
                 <option value="ne_mslp_ptype">Northeast MSLP + P-Type</option>
+                <option value="conus_vort500">CONUS 500mb Vorticity</option>
+                <option value="conus_snow_accum">CONUS Snowfall Accumulation</option>
                 <option value="ne_snow_accum">Northeast Snowfall Accumulation</option>
+                <option value="ne_zoom_snow_accum">New England Zoom Snowfall Accumulation</option>
             </select>
             <button id="prevBtn">Prev</button>
             <span id="label">Hour ---</span>
@@ -97,7 +103,7 @@
     </div>
 
     <script>
-        const hours = [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72];
+        const hours = [6];
         let idx = 0;
 
         const mapEl = document.getElementById('map');
