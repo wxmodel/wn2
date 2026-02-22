@@ -88,8 +88,8 @@ jobs:
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
           EE_PROJECT: ${{ secrets.EE_PROJECT }}
-          HOURS_MAX: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '240' || '' }}
-          HOURS_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '' }}
+          HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || '' }}
+          HOURS_LIMIT: ${{ github.event_name == 'push' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '') }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
           FAST_RENDER: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '1' || '' }}
           EXPORT_WORKERS: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '2' || '2' }}
