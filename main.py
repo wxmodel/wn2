@@ -72,6 +72,53 @@ NE_STATE_NAMES = [
 NE_STATES = US_STATES.filter(ee.Filter.inList('NAME', NE_STATE_NAMES))
 NE_EXCLUDED_STATES = US_STATES.filter(ee.Filter.inList('NAME', ['Virginia', 'North Carolina']))
 
+CONUS_SNOW_LABEL_AIRPORTS = [
+    ('SEA', -122.3088, 47.4502),
+    ('PDX', -122.5951, 45.5898),
+    ('SFO', -122.3790, 37.6213),
+    ('LAX', -118.4085, 33.9416),
+    ('LAS', -115.1512, 36.0840),
+    ('PHX', -112.0116, 33.4343),
+    ('SLC', -111.9778, 40.7884),
+    ('DEN', -104.6737, 39.8561),
+    ('DFW', -97.0403, 32.8998),
+    ('ORD', -87.9073, 41.9742),
+    ('MSP', -93.2218, 44.8848),
+    ('DTW', -83.3534, 42.2162),
+    ('ATL', -84.4277, 33.6407),
+    ('BNA', -86.6689, 36.1263),
+    ('IAD', -77.4565, 38.9531),
+    ('CLT', -80.9431, 35.2140),
+    ('JFK', -73.7781, 40.6413),
+    ('BOS', -71.0052, 42.3656),
+    ('MIA', -80.2906, 25.7959),
+]
+NE_SNOW_LABEL_AIRPORTS = [
+    ('BUF', -78.7322, 42.9405),
+    ('ROC', -77.6724, 43.1189),
+    ('SYR', -76.1063, 43.1112),
+    ('ALB', -73.8017, 42.7483),
+    ('BDL', -72.6832, 41.9389),
+    ('BOS', -71.0052, 42.3656),
+    ('PVD', -71.4332, 41.7240),
+    ('PWM', -70.3093, 43.6462),
+    ('JFK', -73.7781, 40.6413),
+    ('LGA', -73.8740, 40.7769),
+    ('EWR', -74.1745, 40.6895),
+    ('PHL', -75.2424, 39.8729),
+    ('BTV', -73.1533, 44.4719),
+]
+
+
+def _airport_features(airports):
+    features = [ee.Feature(ee.Geometry.Point([lon, lat]), {'code': code}) for code, lon, lat in airports]
+    lookup = {code: (lon, lat) for code, lon, lat in airports}
+    return ee.FeatureCollection(features), lookup
+
+
+CONUS_SNOW_AIRPORT_FC, CONUS_SNOW_AIRPORT_LOOKUP = _airport_features(CONUS_SNOW_LABEL_AIRPORTS)
+NE_SNOW_AIRPORT_FC, NE_SNOW_AIRPORT_LOOKUP = _airport_features(NE_SNOW_LABEL_AIRPORTS)
+
 
 def ts():
     return time.strftime('%Y-%m-%d %H:%M:%S')
@@ -146,24 +193,36 @@ FRZR_RATE_PALETTE = ['#ffe5ef', '#ffc4da', '#f78fb9', '#f06292', '#d81b60', '#ad
 SLEET_RATE_PALETTE = ['#f0d9ff', '#e1bee7', '#ce93d8', '#ab47bc', '#8e24aa', '#6a1b9a']
 INCH_TO_MM = 25.4
 SNOW_PTYPE_SEGMENTS_MMHR = [
-    # 0.0-0.5 in/hr (light -> dark blue)
-    (0.0, 0.5 * INCH_TO_MM, ['#d7f2ff', '#8fd3ff', '#3f98ec']),
+    # 0.0-0.5 in/hr (medium -> dark blue)
+    (0.0, 0.5 * INCH_TO_MM, ['#4ea6ff', '#2f84db', '#1f63bf']),
     # 0.5-1.0 in/hr (dark blue)
-    (0.5 * INCH_TO_MM, 1.0 * INCH_TO_MM, ['#2b76d1', '#1e5fb8', '#124493']),
+    (0.5 * INCH_TO_MM, 1.0 * INCH_TO_MM, ['#2b76d1', '#1e5fb8', '#0f3a88']),
     # 1.0-2.0 in/hr (dark purple)
     (1.0 * INCH_TO_MM, 2.0 * INCH_TO_MM, ['#4a148c', '#5e2aa8', '#7140bf']),
     # 2.0-3.0 in/hr (cyan)
-    (2.0 * INCH_TO_MM, 3.0 * INCH_TO_MM, ['#c9ffff', '#63e8f0', '#00c6d8']),
+    (2.0 * INCH_TO_MM, 3.0 * INCH_TO_MM, ['#b9ffff', '#58e4ef', '#00bfd3']),
 ]
 SNOW_PTYPE_MAX_MMHR = 3.0 * INCH_TO_MM
-SNOW_ACCUM_PALETTE = [
-    '#f7fcff', '#e8f5ff',
-    '#d7edff', '#a9d5ff', '#78b7ff', '#4b8de6', '#2a5fbf',  # 1-5 blue
-    '#d9c8ff', '#b596ff', '#9164e8', '#7038c8', '#5420a8',  # 6-10 purple
-    '#f9bddf', '#f58bc8', '#ec56b0', '#d92f95', '#b81479',  # 10-14 pink
-    '#d7ffff', '#a8f7f7', '#73e8ee', '#3fd8e1', '#12c7d4', '#00b7c5',  # 14-24 cyan
-    '#b8f5a8', '#8fe083', '#5fca57', '#35ae34', '#1f8e28', '#156d1f'   # 25-30 green
+SNOW_ACCUM_STEP_SEGMENTS_IN = [
+    (0.1, 2.0, ['#dff3ff']),
+    (2.0, 4.0, ['#b9e6ff']),
+    (4.0, 6.0, ['#91d6ff']),
+    (6.0, 8.0, ['#67c0ff']),
+    (8.0, 10.0, ['#409fe9']),
+    (10.0, 12.0, ['#2c7dd2']),
+    (12.0, 14.0, ['#3a5dbf']),
+    (14.0, 16.0, ['#5a49bd']),
+    (16.0, 18.0, ['#7a38b6']),
+    (18.0, 20.0, ['#9a2fb0']),
+    (20.0, 22.0, ['#ba3ca8']),
+    (22.0, 24.0, ['#d2579f']),
+    (24.0, 26.0, ['#e67593']),
+    (26.0, 28.0, ['#f29679']),
+    (28.0, 30.0, ['#f6bc57']),
+    (30.0, 32.0, ['#f1df35']),
 ]
+SNOW_ACCUM_MAX_IN = 32.0
+SNOW_ACCUM_OVER_COLOR = '#d60000'
 
 PRODUCT_OPTIONS = [
     ('nh_z500a', 'NH 500mb Height Anomaly', 'nh_z500a_*.jpg', run_nh_z500a_env),
@@ -670,21 +729,9 @@ def _draw_legend(draw, product_key, width, y):
     if product_key in ('conus_snow_accum', 'ne_snow_accum'):
         _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
         draw.text((bar_x, y + 2), 'Accumulated Snowfall Total (in, 10:1 ratio)', fill=(22, 22, 22), font=label_font)
-        snow_segments = [
-            (1.0, 4.0, ['#d7eeff', '#7ec7ff', '#2f82d8']),
-            (4.0, 6.0, ['#2f82d8', '#1f5faf', '#123d82']),
-            (6.0, 8.0, ['#4b0f8f', '#5e1ea8', '#7435bf']),
-            (8.0, 10.0, ['#7435bf', '#8c55cf', '#a678df']),
-            (10.0, 12.0, ['#a678df', '#b996ea', '#ceb8f5']),
-            (12.0, 14.0, ['#b1006e', '#cb1f84', '#df3d98']),
-            (14.0, 18.0, ['#df3d98', '#ea63ae', '#f08cc6']),
-            (18.0, 20.0, ['#f08cc6', '#f5add8', '#f9c8e6']),
-            (20.0, 22.0, ['#d8ffff', '#a8f8ff', '#7beeff']),
-            (22.0, 24.0, ['#7beeff', '#45dff0', '#16c8dc']),
-            (24.0, 26.0, ['#16c8dc', '#00acc5', '#007c98']),
-        ]
-        _draw_segmented_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, snow_segments, 1.0, 26.0)
-        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [1, 4, 6, 8, 10, 12, 14, 18, 20, 22, 24, 26], 1.0, 26.0, tick_font)
+        snow_segments = [(low, high, palette) for low, high, palette in SNOW_ACCUM_STEP_SEGMENTS_IN]
+        _draw_segmented_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, snow_segments, 0.1, SNOW_ACCUM_MAX_IN)
+        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32], 0.1, SNOW_ACCUM_MAX_IN, tick_font)
         return
 
     if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
@@ -756,7 +803,7 @@ def _lonlat_to_image_xy(lon, lat, region, width, height):
     return x, y
 
 
-def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=None):
+def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=None, snow_labels=None):
     from PIL import Image, ImageDraw
 
     product_titles = {
@@ -765,8 +812,8 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
         'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | CONUS',
         'ne_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | Northeast',
         'conus_vort500': 'WN2 0.25 deg | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
-        'conus_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) + MSLP (hPa) | CONUS',
-        'ne_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) + MSLP (hPa) | Northeast',
+        'conus_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) | CONUS',
+        'ne_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) | Northeast',
     }
     title = product_titles.get(product_key, product_key)
     init_text, valid_text = format_map_times(hour)
@@ -811,6 +858,43 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
                         marker_draw.text((mb_x, mb_y), mb_text, fill=(214, 28, 28), font=value_font, stroke_width=2, stroke_fill=(20, 20, 20))
                     except TypeError:
                         marker_draw.text((mb_x, mb_y), mb_text, fill=(214, 28, 28), font=value_font)
+
+        if map_region is not None and snow_labels:
+            snow_draw = ImageDraw.Draw(img)
+            snow_font = load_font(20 if img.width >= 1300 else 16, bold=True)
+            placed = []
+            for item in sorted(snow_labels, key=lambda s: s.get('inches', 0.0), reverse=True):
+                code = item.get('code')
+                inches = item.get('inches')
+                if not code or inches is None or float(inches) < 0.5:
+                    continue
+                marker_xy = _lonlat_to_image_xy(
+                    item.get('lon'),
+                    item.get('lat'),
+                    map_region,
+                    img.width,
+                    img.height,
+                )
+                if marker_xy is None:
+                    continue
+                x, y = marker_xy
+                text = f'{code} {int(round(float(inches)))}'
+                tw, th = _text_size(snow_draw, text, snow_font)
+                tx = max(4, min(img.width - tw - 4, x + 4))
+                ty = max(4, min(img.height - th - 4, y - th - 2))
+                rect = (tx - 2, ty - 1, tx + tw + 2, ty + th + 1)
+                overlaps = False
+                for ox0, oy0, ox1, oy1 in placed:
+                    if not (rect[2] < ox0 or rect[0] > ox1 or rect[3] < oy0 or rect[1] > oy1):
+                        overlaps = True
+                        break
+                if overlaps:
+                    continue
+                try:
+                    snow_draw.text((tx, ty), text, fill=(32, 32, 32), font=snow_font, stroke_width=2, stroke_fill=(245, 245, 245))
+                except TypeError:
+                    snow_draw.text((tx, ty), text, fill=(32, 32, 32), font=snow_font)
+                placed.append(rect)
 
         legend_h = 0
         if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
@@ -1130,6 +1214,43 @@ def find_low_center(mslp_hpa, region_geom, fallback_region=None, scale_m=50000):
     return _fallback(mb_value)
 
 
+def get_snow_airport_labels(snow_total_in, key):
+    if key.startswith('ne_'):
+        airport_fc = NE_SNOW_AIRPORT_FC
+        lookup = NE_SNOW_AIRPORT_LOOKUP
+    else:
+        airport_fc = CONUS_SNOW_AIRPORT_FC
+        lookup = CONUS_SNOW_AIRPORT_LOOKUP
+    try:
+        samples = snow_total_in.rename('snow_in').sampleRegions(
+            collection=airport_fc,
+            properties=['code'],
+            scale=25000,
+            geometries=False,
+            tileScale=4,
+        ).getInfo() or {}
+        labels = []
+        for feat in samples.get('features', []):
+            props = feat.get('properties') or {}
+            code = props.get('code')
+            val = props.get('snow_in')
+            if code is None or val is None:
+                continue
+            if code not in lookup:
+                continue
+            lon, lat = lookup[code]
+            labels.append({
+                'code': code,
+                'inches': max(0.0, float(val)),
+                'lon': lon,
+                'lat': lat,
+            })
+        return labels
+    except Exception as e:
+        print(f'[{ts()}] Snow airport labels skipped: {e}')
+        return []
+
+
 def snow_increment_cm(img, region_geom):
     precip_rate_sm, precip_6h_mm, _, snow, _, _ = derive_precip_phase(img, region_geom)
     robust_snow = snow.And(precip_rate_sm.gt(0.2))
@@ -1147,24 +1268,19 @@ def range_gradient_layer(field, low, high, palette, include_high=False):
 
 
 def snow_accum_layer(snow_total_in):
-    return ee.ImageCollection([
-        # 1-6": blue family (light -> dark)
-        range_gradient_layer(snow_total_in, 1.0, 4.0, ['#d7eeff', '#7ec7ff', '#2f82d8']),
-        range_gradient_layer(snow_total_in, 4.0, 6.0, ['#2f82d8', '#1f5faf', '#123d82']),
-        # 6-12": purple family (dark -> light)
-        range_gradient_layer(snow_total_in, 6.0, 8.0, ['#4b0f8f', '#5e1ea8', '#7435bf']),
-        range_gradient_layer(snow_total_in, 8.0, 10.0, ['#7435bf', '#8c55cf', '#a678df']),
-        range_gradient_layer(snow_total_in, 10.0, 12.0, ['#a678df', '#b996ea', '#ceb8f5']),
-        # 12-20": pink family (dark -> light)
-        range_gradient_layer(snow_total_in, 12.0, 14.0, ['#b1006e', '#cb1f84', '#df3d98']),
-        range_gradient_layer(snow_total_in, 14.0, 18.0, ['#df3d98', '#ea63ae', '#f08cc6']),
-        range_gradient_layer(snow_total_in, 18.0, 20.0, ['#f08cc6', '#f5add8', '#f9c8e6']),
-        # 20-26": cyan family (light -> dark)
-        range_gradient_layer(snow_total_in, 20.0, 22.0, ['#d8ffff', '#a8f8ff', '#7beeff']),
-        range_gradient_layer(snow_total_in, 22.0, 24.0, ['#7beeff', '#45dff0', '#16c8dc']),
-        range_gradient_layer(snow_total_in, 24.0, 26.0, ['#16c8dc', '#00acc5', '#007c98'], include_high=True),
-        snow_total_in.gt(26.0).selfMask().visualize(palette=['#007c98']),
-    ]).mosaic()
+    layers = []
+    for idx, (low, high, palette) in enumerate(SNOW_ACCUM_STEP_SEGMENTS_IN):
+        layers.append(
+            range_gradient_layer(
+                snow_total_in,
+                low,
+                high,
+                palette,
+                include_high=(idx == len(SNOW_ACCUM_STEP_SEGMENTS_IN) - 1),
+            )
+        )
+    layers.append(snow_total_in.gt(SNOW_ACCUM_MAX_IN).selfMask().visualize(palette=[SNOW_ACCUM_OVER_COLOR]))
+    return ee.ImageCollection(layers).mosaic()
 
 
 def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_ptype'):
@@ -1225,15 +1341,13 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
     snow_total_in = running_snow_cm.divide(2.54).clip(work_geom)
     snow_total_vis = snow_total_in.resample('bilinear').focalMean(1, 'circle', 'pixels')
     snow_layer = snow_accum_layer(snow_total_vis)
-    mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(work_geom)
-    mslp_contours = contour_overlay(mslp_hpa, interval=3, color='#2f2f2f', opacity=0.9)
+    snow_labels = get_snow_airport_labels(snow_total_in, key)
     z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(work_geom)
     z500_contours = contour_overlay(z500_height_dam, interval=6, color='#4a4a4a', opacity=0.76)
 
     composite = ee.ImageCollection([
         basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6', land_fc=land_fc),
         snow_layer,
-        mslp_contours,
         z500_contours,
         border_overlay(include_states=True, state_names=state_names),
     ]).mosaic()
@@ -1241,7 +1355,7 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
     out_file = f'{OUTPUT}/{key}_{h:03d}.jpg'
     dims = SNOW_NE_DIMS if key.startswith('ne_') else SNOW_CONUS_DIMS
     export_composite(composite, out_file, region, dimensions=dims)
-    annotate_map_file(out_file, key, h)
+    annotate_map_file(out_file, key, h, map_region=region, snow_labels=snow_labels)
 
 
 def generate_vort500_map(img, h):
