@@ -1,7 +1,7 @@
 {
-  "generated_utc": "2026-02-23T19:36:53Z",
+  "generated_utc": "2026-02-23T22:00:25Z",
   "history_hours": 24,
-  "default_run_id": "2026022306",
+  "default_run_id": "2026022312",
   "snow_products": [
     "conus_snow_accum",
     "ne_snow_accum",
@@ -18,6 +18,27 @@
     "ne_zoom_snow_accum": "New England Zoom Snowfall Accumulation"
   },
   "runs": [
+    {
+      "id": "2026022312",
+      "label": "2026-02-23 12Z",
+      "run_date": "202602231200_202602231800_0",
+      "init_utc": "2026-02-23T12:00:00Z",
+      "hours": [
+        6,
+        12,
+        18,
+        24,
+        30,
+        36
+      ],
+      "products": [
+        "ne_zoom_snow_accum"
+      ],
+      "snow_ratios": [
+        15
+      ],
+      "updated_utc": "2026-02-23T22:00:25Z"
+    },
     {
       "id": "2026022306",
       "label": "2026-02-23 06Z",
