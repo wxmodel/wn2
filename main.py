@@ -193,6 +193,7 @@ hours_csv = os.environ.get('HOURS_CSV')
 hours_step_env = os.environ.get('HOURS_STEP')
 hours_max_env = os.environ.get('HOURS_MAX')
 hours_limit_env = os.environ.get('HOURS_LIMIT')
+run_init_utc_env = os.environ.get('RUN_INIT_UTC')
 snow_ratio_csv_env = os.environ.get('SNOW_RATIO_CSV')
 run_history_hours_env = os.environ.get('RUN_HISTORY_HOURS')
 event_name = (os.environ.get('GITHUB_EVENT_NAME') or '').lower()
@@ -424,11 +425,68 @@ def get_latest_start_time_recent(ic, days=7):
     return latest_start_time, latest_start_date, recent, latest_run_collection
 
 
-# Get the latest run from a recent time window (avoid expensive full-collection latest query)
+def parse_utc_timestamp(raw):
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+
+    iso_text = text[:-1] + '+00:00' if text.endswith('Z') else text
+    try:
+        dt = datetime.fromisoformat(iso_text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        pass
+
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return None
+
+
+def format_utc_timestamp(dt):
+    return dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def get_selected_start_time_recent(ic, days=7, requested_start_time=None):
+    if requested_start_time:
+        requested_dt = parse_utc_timestamp(requested_start_time)
+        if requested_dt is None:
+            raise ValueError(
+                f'RUN_INIT_UTC="{requested_start_time}" is invalid. '
+                'Use an ISO UTC timestamp like 2026-02-22T12:00:00Z.'
+            )
+        requested_iso = format_utc_timestamp(requested_dt)
+        print(f'[{ts()}] RUN_INIT_UTC requested: {requested_iso}')
+        requested = ic.filter(ee.Filter.eq('start_time', requested_iso))
+        requested_count = requested.size().getInfo()
+        print(f'[{ts()}] Requested run frame count: {requested_count}')
+        if requested_count == 0:
+            raise ValueError(
+                f'Requested RUN_INIT_UTC={requested_iso} was not found in {ASSET}. '
+                'Confirm the init time exists in WeatherNext2.'
+            )
+        return requested_iso, ee.Date(requested_iso), requested, requested
+
+    return get_latest_start_time_recent(ic, days=days)
+
+
+# Select either explicit RUN_INIT_UTC or latest run from a recent time window.
 collection = ee.ImageCollection(ASSET)
-latest_start_time, latest_start_date, recent_collection, latest_start_collection = get_latest_start_time_recent(collection, days=7)
+latest_start_time, latest_start_date, recent_collection, latest_start_collection = get_selected_start_time_recent(
+    collection,
+    days=7,
+    requested_start_time=run_init_utc_env,
+)
 
 if latest_start_collection.size().getInfo() == 0:
+    if run_init_utc_env:
+        raise ValueError(f'Requested RUN_INIT_UTC={run_init_utc_env} returned no images.')
     raise ValueError('Latest WN2 run filter returned no images in the last 7 days.')
 
 
@@ -457,6 +515,8 @@ else:
 
 print(f'[{ts()}] Snow ratios selected: {SNOW_RATIOS}')
 print(f'[{ts()}] Run history retention: {RUN_HISTORY_HOURS}h')
+if run_init_utc_env:
+    print(f'[{ts()}] Requested run init override: {run_init_utc_env}')
 
 
 def _infer_available_hours(run_collection):
@@ -548,15 +608,14 @@ if run_date is None:
 print(f'[{ts()}] Fetched system:index in {time.time() - t0:.2f}s: {run_date}')
 
 print(f'Processing Run: {run_date}')
-print(f'Latest start_time: {latest_start_time}')
+print(f'Selected start_time: {latest_start_time}')
 
 
 def parse_run_init_utc(ts_utc):
-    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(ts_utc, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
+    parsed = parse_utc_timestamp(ts_utc)
+    if parsed is not None:
+        return parsed
+    print(f'[{ts()}] Warning: could not parse run init "{ts_utc}", falling back to current UTC time.')
     return datetime.now(timezone.utc)
 
 

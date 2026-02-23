@@ -36,6 +36,11 @@ on:
           - "120"
           - "180"
           - "240"
+      run_init_utc:
+        description: "Optional run init UTC override (example: 2026-02-22T12:00:00Z)"
+        required: false
+        default: ""
+        type: string
       snow_ratio_csv:
         description: "Snow ratios to render (10-20, comma-separated; e.g. 10,12,15,20)"
         required: false
@@ -139,6 +144,7 @@ jobs:
           HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || (github.event_name == 'workflow_dispatch' && github.event.inputs.hour_range_preset != 'full' && github.event.inputs.hour_range_preset || '') }}
           HOURS_LIMIT: ${{ github.event_name == 'push' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '') }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
+          RUN_INIT_UTC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_init_utc || '' }}
           SNOW_RATIO_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.snow_ratio_csv || '10,12,15,20' }}
           RUN_HISTORY_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_history_hours || '24' }}
           FAST_RENDER: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '1' || '' }}
