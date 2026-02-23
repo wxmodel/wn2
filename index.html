@@ -11,7 +11,7 @@
             font-family:system-ui, sans-serif;
             text-align:center;
             margin:0;
-            padding-bottom:136px;
+            padding-bottom:168px;
         }
         .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 18px; }
         .map-wrap { background:#111; border:1px solid #4f4f4f; }
@@ -32,6 +32,18 @@
             border:1px solid #666;
             background:#2a2a2a;
             color:#f1f1f1;
+            min-width:120px;
+        }
+        .meta {
+            margin:4px 0 10px;
+            font-size:14px;
+            color:#cecece;
+        }
+        #status {
+            min-height:20px;
+            margin-bottom:10px;
+            color:#ffc9b3;
+            font-size:14px;
         }
         #label {
             display:inline-block;
@@ -66,15 +78,17 @@
         @media (max-width: 760px) {
             h2 { font-size:20px; margin:10px 0; }
             button { font-size:14px; padding:8px 12px; }
-            select { font-size:14px; }
+            select { font-size:14px; min-width:96px; }
             #label { min-width:86px; }
-            body { padding-bottom:160px; }
+            body { padding-bottom:210px; }
         }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <h2>WeatherNext 2 Map Viewer: 202602230000_202602230600_0</h2>
+        <h2 id="title">WeatherNext 2 Map Viewer</h2>
+        <div id="meta" class="meta"></div>
+        <div id="status"></div>
         <div class="map-wrap">
             <img id="map" src="" alt="WN2 map">
         </div>
@@ -82,17 +96,14 @@
 
     <div class="bottom-controls">
         <div class="row">
+            <label for="run">Run:</label>
+            <select id="run"></select>
             <label for="product">Map:</label>
-            <select id="product">
-                <option value="nh_z500a">NH 500mb Height Anomaly</option>
-                <option value="na_z500a">North America 500mb Height Anomaly</option>
-                <option value="conus_mslp_ptype">CONUS MSLP + P-Type</option>
-                <option value="ne_mslp_ptype">Northeast MSLP + P-Type</option>
-                <option value="conus_vort500">CONUS 500mb Vorticity</option>
-                <option value="conus_snow_accum">CONUS Snowfall Accumulation</option>
-                <option value="ne_snow_accum">Northeast Snowfall Accumulation</option>
-                <option value="ne_zoom_snow_accum">New England Zoom Snowfall Accumulation</option>
-            </select>
+            <select id="product"></select>
+            <label for="snowRatio">Snow Ratio:</label>
+            <select id="snowRatio"></select>
+        </div>
+        <div class="row" style="margin-top:8px;">
             <button id="prevBtn">Prev</button>
             <span id="label">Hour ---</span>
             <button id="nextBtn">Next</button>
@@ -103,51 +114,179 @@
     </div>
 
     <script>
-        const hours = [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 96, 102, 108, 114, 120, 126, 132, 138, 144, 150, 156, 162, 168, 174, 180, 186, 192, 198, 204, 210, 216, 222, 228, 234, 240];
+        const manifest = {"generated_utc":"2026-02-23T19:36:53Z","history_hours":24,"default_run_id":"2026022306","snow_products":["conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"product_labels":{"nh_z500a":"NH 500mb Height Anomaly","na_z500a":"North America 500mb Height Anomaly","conus_mslp_ptype":"CONUS MSLP + P-Type","ne_mslp_ptype":"Northeast MSLP + P-Type","conus_vort500":"CONUS 500mb Vorticity","conus_snow_accum":"CONUS Snowfall Accumulation","ne_snow_accum":"Northeast Snowfall Accumulation","ne_zoom_snow_accum":"New England Zoom Snowfall Accumulation"},"runs":[{"id":"2026022306","label":"2026-02-23 06Z","run_date":"202602230600_202602231200_0","init_utc":"2026-02-23T06:00:00Z","hours":[6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120,126,132,138,144,150,156,162,168,174,180,186,192,198,204,210,216,222,228,234,240],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-23T19:36:53Z"}]};
+        const runs = Array.isArray(manifest.runs) ? manifest.runs : [];
+        const snowProducts = new Set(Array.isArray(manifest.snow_products) ? manifest.snow_products : []);
+        const productLabels = (manifest.product_labels && typeof manifest.product_labels === 'object') ? manifest.product_labels : {};
+        let activeHours = [];
         let idx = 0;
 
         const mapEl = document.getElementById('map');
+        const titleEl = document.getElementById('title');
+        const metaEl = document.getElementById('meta');
+        const statusEl = document.getElementById('status');
         const labelEl = document.getElementById('label');
+        const runEl = document.getElementById('run');
         const productEl = document.getElementById('product');
+        const ratioEl = document.getElementById('snowRatio');
         const sliderEl = document.getElementById('hourSlider');
         const prevBtn = document.getElementById('prevBtn');
         const nextBtn = document.getElementById('nextBtn');
 
-        function render() {
-            if (!hours.length) {
-                mapEl.src = '';
-                labelEl.innerText = 'No hours';
+        function normalizeIntList(values, minValue, maxValue) {
+            if (!Array.isArray(values)) return [];
+            const out = [];
+            for (const raw of values) {
+                const n = Number(raw);
+                if (!Number.isInteger(n)) continue;
+                if (minValue !== null && n < minValue) continue;
+                if (maxValue !== null && n > maxValue) continue;
+                out.push(n);
+            }
+            return Array.from(new Set(out)).sort((a, b) => a - b);
+        }
+
+        function getCurrentRun() {
+            const selected = runEl.value;
+            for (const run of runs) {
+                if (String(run.id) === selected) return run;
+            }
+            return runs.length ? runs[0] : null;
+        }
+
+        function setSelectOptions(selectEl, values, labelFn) {
+            const prev = selectEl.value;
+            selectEl.innerHTML = '';
+            for (const value of values) {
+                const option = document.createElement('option');
+                option.value = String(value);
+                option.textContent = labelFn(value);
+                selectEl.appendChild(option);
+            }
+            for (const value of values) {
+                if (String(value) === prev) {
+                    selectEl.value = prev;
+                    return;
+                }
+            }
+            if (values.length) {
+                selectEl.value = String(values[0]);
+            }
+        }
+
+        function buildFrameName(product, hour, ratio) {
+            const hourStr = String(hour).padStart(3, '0');
+            if (snowProducts.has(product)) {
+                const ratioStr = String(ratio).padStart(2, '0');
+                return product + '_r' + ratioStr + '_' + hourStr + '.jpg';
+            }
+            return product + '_' + hourStr + '.jpg';
+        }
+
+        function syncRunScopedControls() {
+            const run = getCurrentRun();
+            if (!run) {
+                activeHours = [];
+                productEl.innerHTML = '';
+                ratioEl.innerHTML = '';
+                sliderEl.max = '0';
+                sliderEl.value = '0';
+                idx = 0;
                 return;
             }
-            const hour = hours[idx];
-            const hourStr = hour.toString().padStart(3, '0');
+            const products = Array.isArray(run.products) ? run.products : [];
+            const ratios = normalizeIntList(run.snow_ratios, 10, 20);
+            const hours = normalizeIntList(run.hours, 0, null);
+            setSelectOptions(productEl, products, (key) => productLabels[key] || key);
+            setSelectOptions(ratioEl, ratios.length ? ratios : [10], (ratio) => ratio + ':1');
+
+            const previousHour = activeHours[idx];
+            activeHours = hours;
+            if (activeHours.length === 0) {
+                idx = 0;
+            } else {
+                const found = activeHours.indexOf(previousHour);
+                idx = found >= 0 ? found : 0;
+            }
+            sliderEl.max = String(Math.max(0, activeHours.length - 1));
+            sliderEl.value = String(idx);
+        }
+
+        function render() {
+            const run = getCurrentRun();
+            if (!run || !activeHours.length || !productEl.value) {
+                mapEl.src = '';
+                labelEl.innerText = 'No hours';
+                titleEl.innerText = 'WeatherNext 2 Map Viewer';
+                metaEl.innerText = '';
+                statusEl.innerText = runs.length ? 'No frames available for this run.' : 'No runs available.';
+                return;
+            }
+
             const product = productEl.value;
-            mapEl.src = `${product}_${hourStr}.jpg`;
-            labelEl.innerText = `Hour ${hourStr}`;
+            const isSnow = snowProducts.has(product);
+            ratioEl.disabled = !isSnow;
+            if (!isSnow) {
+                ratioEl.title = 'Snow ratio applies to snowfall accumulation maps only.';
+            } else {
+                ratioEl.title = '';
+            }
+
+            const hour = activeHours[idx];
+            const ratio = Number(ratioEl.value || 10);
+            const frameName = buildFrameName(product, hour, ratio);
+            const runId = String(run.id);
+            const runLabel = run.label || runId;
+            const initUtc = run.init_utc || 'unknown';
+            const hourStr = String(hour).padStart(3, '0');
+
+            mapEl.src = 'runs/' + runId + '/' + frameName;
+            mapEl.alt = runId + ' ' + product + ' hour ' + hourStr;
+            labelEl.innerText = 'Hour ' + hourStr;
+            titleEl.innerText = 'WeatherNext 2 Map Viewer: ' + (run.run_date || runLabel);
+            metaEl.innerText = 'Run ' + runLabel + ' | Init ' + initUtc + (isSnow ? ' | Ratio ' + ratio + ':1' : '');
+            statusEl.innerText = '';
         }
 
         function change(dir) {
-            if (!hours.length) return;
-            idx = (idx + dir + hours.length) % hours.length;
+            if (!activeHours.length) return;
+            idx = (idx + dir + activeHours.length) % activeHours.length;
             sliderEl.value = String(idx);
             render();
         }
 
+        mapEl.addEventListener('error', () => {
+            statusEl.innerText = 'Selected frame is missing for this run/product/hour/ratio.';
+        });
+        mapEl.addEventListener('load', () => {
+            statusEl.innerText = '';
+        });
+
+        runEl.addEventListener('change', () => {
+            syncRunScopedControls();
+            render();
+        });
+        productEl.addEventListener('change', render);
+        ratioEl.addEventListener('change', render);
         sliderEl.addEventListener('input', () => {
             idx = Number(sliderEl.value);
             render();
         });
-        productEl.addEventListener('change', render);
         prevBtn.addEventListener('click', () => change(-1));
         nextBtn.addEventListener('click', () => change(1));
 
-        if (hours.length > 0) {
-            sliderEl.max = String(hours.length - 1);
-            sliderEl.value = '0';
-            render();
-        } else {
-            render();
+        setSelectOptions(runEl, runs.map((run) => run.id), (id) => {
+            const run = runs.find((item) => String(item.id) === String(id));
+            return run ? (run.label || String(id)) : String(id);
+        });
+        if (runs.length) {
+            const defaultId = runs.some((run) => String(run.id) === String(manifest.default_run_id))
+                ? String(manifest.default_run_id)
+                : String(runs[0].id);
+            runEl.value = defaultId;
         }
+        syncRunScopedControls();
+        render();
     </script>
 </body>
 </html>
