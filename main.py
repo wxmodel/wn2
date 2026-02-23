@@ -5,6 +5,7 @@ import time
 import glob
 import hashlib
 import math
+import shutil
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -192,6 +193,8 @@ hours_csv = os.environ.get('HOURS_CSV')
 hours_step_env = os.environ.get('HOURS_STEP')
 hours_max_env = os.environ.get('HOURS_MAX')
 hours_limit_env = os.environ.get('HOURS_LIMIT')
+snow_ratio_csv_env = os.environ.get('SNOW_RATIO_CSV')
+run_history_hours_env = os.environ.get('RUN_HISTORY_HOURS')
 event_name = (os.environ.get('GITHUB_EVENT_NAME') or '').lower()
 fast_render_env = os.environ.get('FAST_RENDER')
 run_nh_z500a_env = os.environ.get('WN2_RUN_NH_Z500A')
@@ -302,6 +305,7 @@ PRODUCT_OPTIONS = [
     ('ne_snow_accum', 'Northeast Snowfall Accumulation', 'ne_snow_accum_*.jpg', run_ne_snow_accum_env),
     ('ne_zoom_snow_accum', 'New England Zoom Snowfall Accumulation', 'ne_zoom_snow_accum_*.jpg', run_ne_zoom_snow_accum_env),
 ]
+SNOW_PRODUCT_KEYS = {'conus_snow_accum', 'ne_snow_accum', 'ne_zoom_snow_accum'}
 
 ENABLED_PRODUCTS = []
 for key, label, pattern, raw_flag in PRODUCT_OPTIONS:
@@ -435,6 +439,26 @@ def _parse_int(value):
         return None
 
 
+def _parse_snow_ratios(csv_value):
+    if csv_value:
+        parts = [p.strip() for p in str(csv_value).split(',') if p.strip()]
+        parsed = sorted({v for v in (_parse_int(p) for p in parts) if v is not None and 10 <= v <= 20})
+        if parsed:
+            return parsed
+    return [10, 12, 15, 20]
+
+
+SNOW_RATIOS = _parse_snow_ratios(snow_ratio_csv_env)
+run_history_hours_raw = _parse_int(run_history_hours_env)
+if run_history_hours_raw is None:
+    RUN_HISTORY_HOURS = 24
+else:
+    RUN_HISTORY_HOURS = max(6, min(72, run_history_hours_raw))
+
+print(f'[{ts()}] Snow ratios selected: {SNOW_RATIOS}')
+print(f'[{ts()}] Run history retention: {RUN_HISTORY_HOURS}h')
+
+
 def _infer_available_hours(run_collection):
     raw_hours = run_collection.aggregate_array('forecast_hour').getInfo()
     parsed = sorted({h for h in (_parse_int(v) for v in raw_hours) if h is not None and h >= 0})
@@ -537,6 +561,12 @@ def parse_run_init_utc(ts_utc):
 
 
 RUN_INIT_UTC = parse_run_init_utc(latest_start_time)
+RUN_ID = RUN_INIT_UTC.strftime('%Y%m%d%H')
+RUN_ID_LABEL = RUN_INIT_UTC.strftime('%Y-%m-%d %HZ')
+RUNS_ROOT_DIR = Path(OUTPUT) / 'runs'
+RUN_OUTPUT_DIR = RUNS_ROOT_DIR / RUN_ID
+RUN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+print(f'[{ts()}] Run output directory: {RUN_OUTPUT_DIR}')
 
 
 def format_map_times(hour):
@@ -773,7 +803,7 @@ def _draw_segmented_gradient_bar(draw, x, y, w, h, segments, vmin, vmax):
     draw.rectangle((x, y, x + w, y + h), outline=(50, 50, 50), width=1)
 
 
-def _draw_legend(draw, product_key, width, y):
+def _draw_legend(draw, product_key, width, y, snow_ratio=10):
     label_font = load_font(22 if width >= 1200 else 18, bold=False)
     tick_font = load_font(16 if width >= 1200 else 14, bold=False)
     x_pad = 58 if width >= 1200 else 36
@@ -798,7 +828,7 @@ def _draw_legend(draw, product_key, width, y):
 
     if product_key in ('conus_snow_accum', 'ne_snow_accum', 'ne_zoom_snow_accum'):
         _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
-        draw.text((bar_x, y + 2), 'Accumulated Snowfall Total (in, 10:1 ratio)', fill=(22, 22, 22), font=label_font)
+        draw.text((bar_x, y + 2), f'Accumulated Snowfall Total (in, {int(snow_ratio)}:1 ratio)', fill=(22, 22, 22), font=label_font)
         snow_segments = [(low, high, palette) for low, high, palette in SNOW_ACCUM_STEP_SEGMENTS_IN]
         _draw_segmented_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, snow_segments, 0.1, SNOW_ACCUM_MAX_IN)
         _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32], 0.1, SNOW_ACCUM_MAX_IN, tick_font)
@@ -873,7 +903,7 @@ def _lonlat_to_image_xy(lon, lat, region, width, height):
     return x, y
 
 
-def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=None, snow_labels=None):
+def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=None, snow_labels=None, snow_ratio=10):
     from PIL import Image, ImageDraw
 
     product_titles = {
@@ -882,9 +912,9 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
         'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | CONUS',
         'ne_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | Northeast',
         'conus_vort500': 'WN2 0.25 deg | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
-        'conus_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) | CONUS',
-        'ne_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) | Northeast',
-        'ne_zoom_snow_accum': 'WN2 0.25 deg | Accumulated Snowfall (in, 10:1) | New England Zoom',
+        'conus_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | CONUS',
+        'ne_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | Northeast',
+        'ne_zoom_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | New England Zoom',
     }
     title = product_titles.get(product_key, product_key)
     init_text, valid_text = format_map_times(hour)
@@ -1005,7 +1035,7 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
         draw.rectangle((0, header_h, img.width - 1, header_h + img.height - 1), outline=(32, 32, 32), width=2)
 
         if legend_h > 0:
-            _draw_legend(draw, product_key, img.width, header_h + img.height + 2)
+            _draw_legend(draw, product_key, img.width, header_h + img.height + 2, snow_ratio=snow_ratio)
 
         footer_text = 'Source: WeatherNext2 (Earlth Engine) | Generated by: Jonathan Wall (@_jwall on X)'
         footer_font = _fit_font(
@@ -1159,10 +1189,10 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     ]
     composite = ee.ImageCollection(overlays).mosaic()
 
-    out_file = f'{OUTPUT}/{prefix}_{h:03d}.jpg'
+    out_file = build_frame_path(prefix, h)
     if prefix == 'nh_z500a':
-        west_file = f'{OUTPUT}/_tmp_nh_w_{h:03d}.jpg'
-        east_file = f'{OUTPUT}/_tmp_nh_e_{h:03d}.jpg'
+        west_file = str(RUN_OUTPUT_DIR / f'_tmp_nh_w_{h:03d}.jpg')
+        east_file = str(RUN_OUTPUT_DIR / f'_tmp_nh_e_{h:03d}.jpg')
         split_dims = split_nh_dimensions(NH_SOURCE_DIMS)
         export_composite(composite.clip(NH_W), west_file, NH_W_BOUNDS, dimensions=split_dims)
         export_composite(composite.clip(NH_E), east_file, NH_E_BOUNDS, dimensions=split_dims)
@@ -1365,6 +1395,21 @@ def snow_accum_layer(snow_total_in):
     return ee.ImageCollection(layers).mosaic()
 
 
+def is_snow_product(product_key):
+    return product_key in SNOW_PRODUCT_KEYS
+
+
+def build_frame_name(product_key, hour, snow_ratio=None):
+    if is_snow_product(product_key):
+        ratio = int(round(float(snow_ratio if snow_ratio is not None else 10)))
+        return f'{product_key}_r{ratio:02d}_{hour:03d}.jpg'
+    return f'{product_key}_{hour:03d}.jpg'
+
+
+def build_frame_path(product_key, hour, snow_ratio=None):
+    return str(RUN_OUTPUT_DIR / build_frame_name(product_key, hour, snow_ratio=snow_ratio))
+
+
 def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_ptype'):
     region_geom = ee.Geometry.Rectangle(region, geodesic=False)
     is_ne = key.startswith('ne_')
@@ -1408,19 +1453,20 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
         border_overlay(include_states=True, state_names=state_names),
     ]).mosaic()
 
-    out_file = f'{OUTPUT}/{key}_{h:03d}.jpg'
+    out_file = build_frame_path(key, h)
     dims = PTYPE_NE_DIMS if key.startswith('ne_') else PTYPE_CONUS_DIMS
     export_composite(composite, out_file, region, dimensions=dims)
     annotate_map_file(out_file, key, h, map_region=region, low_center=low_center)
 
 
-def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, key='conus_snow_accum'):
+def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, key='conus_snow_accum', snow_ratio=10):
     region_geom = ee.Geometry.Rectangle(region, geodesic=False)
     is_ne = key.startswith('ne_')
     state_names = NE_STATE_NAMES if is_ne else None
     land_fc = NE_STATES if is_ne else None
     work_geom = region_geom.difference(NE_EXCLUDED_STATES.geometry(), maxError=1000) if is_ne else region_geom
-    snow_total_in = running_snow_cm.divide(2.54).clip(work_geom)
+    ratio_scale = ee.Image.constant(float(snow_ratio) / 10.0)
+    snow_total_in = running_snow_cm.multiply(ratio_scale).divide(2.54).clip(work_geom)
     snow_total_vis = snow_total_in.resample('bilinear').focalMean(1, 'circle', 'pixels')
     snow_layer = snow_accum_layer(snow_total_vis)
     snow_labels = get_snow_airport_labels(snow_total_in, key)
@@ -1431,10 +1477,10 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
         border_overlay(include_states=True, state_names=state_names),
     ]).mosaic()
 
-    out_file = f'{OUTPUT}/{key}_{h:03d}.jpg'
+    out_file = build_frame_path(key, h, snow_ratio=snow_ratio)
     dims = SNOW_NE_DIMS if key.startswith('ne_') else SNOW_CONUS_DIMS
     export_composite(composite, out_file, region, dimensions=dims)
-    annotate_map_file(out_file, key, h, map_region=region, snow_labels=snow_labels)
+    annotate_map_file(out_file, key, h, map_region=region, snow_labels=snow_labels, snow_ratio=snow_ratio)
 
 
 def generate_vort500_map(img, h):
@@ -1471,7 +1517,7 @@ def generate_vort500_map(img, h):
         border_overlay(include_states=True),
     ]).mosaic()
 
-    out_file = f'{OUTPUT}/conus_vort500_{h:03d}.jpg'
+    out_file = build_frame_path('conus_vort500', h)
     export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=CONUS_DIMS)
     annotate_map_file(out_file, 'conus_vort500', h)
 
@@ -1484,7 +1530,7 @@ def _file_md5(p: Path) -> str:
     return h.hexdigest()
 
 
-def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg") -> None:
+def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg", require_variation=True) -> None:
     from PIL import Image
     files = sorted(Path(out_dir).glob(pattern))
     if not files:
@@ -1502,7 +1548,7 @@ def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg") -> None:
         raise RuntimeError(f"Sanity check failed: tiny images detected: {tiny[:5]}")
 
     unique_hashes = {h for _, h in hashes}
-    if len(files) > 1 and len(unique_hashes) == 1:
+    if require_variation and len(files) > 1 and len(unique_hashes) == 1:
         raise RuntimeError("Sanity check failed: all images are identical (same MD5).")
 
     print(f"Sanity OK: {len(files)} images, {len(unique_hashes)} unique hashes.")
@@ -1512,8 +1558,7 @@ def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg") -> None:
 cleanup_old_products()
 failures = []
 successful_exports = 0
-product_patterns = [pattern for _, _, pattern in ENABLED_PRODUCTS]
-needs_snow_accum = any(k in ('conus_snow_accum', 'ne_snow_accum', 'ne_zoom_snow_accum') for k, _, _ in ENABLED_PRODUCTS)
+needs_snow_accum = any(k in SNOW_PRODUCT_KEYS for k, _, _ in ENABLED_PRODUCTS)
 snow_accum_by_hour = {}
 
 if needs_snow_accum:
@@ -1566,11 +1611,44 @@ for h in HOURS:
     if 'conus_vort500' in enabled_keys:
         tasks.append(('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)))
     if 'conus_snow_accum' in enabled_keys:
-        tasks.append(('conus_snow_accum', lambda i=img, hh=h, s=snow_for_hour: generate_snow_accum_map(i, hh, s, CONUS_THUMB_REGION, 'conus_snow_accum')))
+        for ratio in SNOW_RATIOS:
+            tasks.append((
+                f'conus_snow_accum_r{ratio:02d}',
+                lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                    i,
+                    hh,
+                    s,
+                    CONUS_THUMB_REGION,
+                    'conus_snow_accum',
+                    snow_ratio=rr,
+                ),
+            ))
     if 'ne_snow_accum' in enabled_keys:
-        tasks.append(('ne_snow_accum', lambda i=img, hh=h, s=snow_for_hour: generate_snow_accum_map(i, hh, s, NE_THUMB_REGION, 'ne_snow_accum')))
+        for ratio in SNOW_RATIOS:
+            tasks.append((
+                f'ne_snow_accum_r{ratio:02d}',
+                lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                    i,
+                    hh,
+                    s,
+                    NE_THUMB_REGION,
+                    'ne_snow_accum',
+                    snow_ratio=rr,
+                ),
+            ))
     if 'ne_zoom_snow_accum' in enabled_keys:
-        tasks.append(('ne_zoom_snow_accum', lambda i=img, hh=h, s=snow_for_hour: generate_snow_accum_map(i, hh, s, NE_ZOOM_SNOW_THUMB_REGION, 'ne_zoom_snow_accum')))
+        for ratio in SNOW_RATIOS:
+            tasks.append((
+                f'ne_zoom_snow_accum_r{ratio:02d}',
+                lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                    i,
+                    hh,
+                    s,
+                    NE_ZOOM_SNOW_THUMB_REGION,
+                    'ne_zoom_snow_accum',
+                    snow_ratio=rr,
+                ),
+            ))
     with ThreadPoolExecutor(max_workers=EXPORT_WORKERS) as pool:
         future_to_name = {pool.submit(fn): name for name, fn in tasks}
         for future in as_completed(future_to_name):
@@ -1597,35 +1675,164 @@ if failures:
         print(f'[{ts()}] Failure summary - hour {h}: {msg}')
 
 if successful_exports > 0:
-    for pattern in product_patterns:
-        sanity_check_jpgs("public", pattern=pattern)
+    for key, _, pattern in ENABLED_PRODUCTS:
+        sanity_check_jpgs(
+            str(RUN_OUTPUT_DIR),
+            pattern=pattern,
+            require_variation=not is_snow_product(key),
+        )
 else:
     print(f'[{ts()}] Skipping sanity check: no product images were created.')
 
 
 # --- 5. BUILD INTERFACE ---
-product_options_html = '\n'.join(
-    [f'                <option value="{key}">{label}</option>' for key, label, _ in ENABLED_PRODUCTS]
+def parse_iso_utc(raw):
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def iso_utc(dt):
+    return dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def normalize_int_list(values, min_value=None, max_value=None):
+    items = []
+    if isinstance(values, list):
+        for raw in values:
+            v = _parse_int(raw)
+            if v is None:
+                continue
+            if min_value is not None and v < min_value:
+                continue
+            if max_value is not None and v > max_value:
+                continue
+            items.append(v)
+    return sorted(set(items))
+
+
+def load_manifest_entries(manifest_path):
+    if not manifest_path.exists():
+        return []
+    try:
+        with manifest_path.open('r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except Exception as e:
+        print(f'[{ts()}] Could not read existing runs manifest: {e}')
+        return []
+    runs = payload.get('runs') if isinstance(payload, dict) else payload
+    if not isinstance(runs, list):
+        return []
+    entries = []
+    for item in runs:
+        if isinstance(item, dict) and item.get('id'):
+            entries.append(item)
+    return entries
+
+
+manifest_path = Path(OUTPUT) / 'runs_manifest.json'
+existing_entries = load_manifest_entries(manifest_path)
+now_utc = datetime.now(timezone.utc)
+cutoff_utc = now_utc - timedelta(hours=RUN_HISTORY_HOURS)
+enabled_keys = [key for key, _, _ in ENABLED_PRODUCTS]
+default_ratios = SNOW_RATIOS if any(k in SNOW_PRODUCT_KEYS for k in enabled_keys) else [10]
+current_entry = {
+    'id': RUN_ID,
+    'label': RUN_ID_LABEL,
+    'run_date': run_date,
+    'init_utc': iso_utc(RUN_INIT_UTC),
+    'hours': HOURS,
+    'products': enabled_keys,
+    'snow_ratios': default_ratios,
+    'updated_utc': iso_utc(now_utc),
+}
+
+merged = {}
+for entry in [current_entry] + existing_entries:
+    rid = str(entry.get('id', '')).strip()
+    if not rid or rid in merged:
+        continue
+    init_dt = parse_iso_utc(entry.get('init_utc'))
+    if init_dt is None:
+        continue
+    if init_dt < cutoff_utc:
+        continue
+    run_dir = RUNS_ROOT_DIR / rid
+    if rid != RUN_ID and not run_dir.exists():
+        continue
+    products = [str(p) for p in entry.get('products', []) if isinstance(p, str)]
+    if not products:
+        continue
+    snow_ratios = normalize_int_list(entry.get('snow_ratios', []), min_value=10, max_value=20)
+    if not snow_ratios:
+        snow_ratios = [10]
+    hours = normalize_int_list(entry.get('hours', []), min_value=0)
+    if not hours:
+        continue
+    merged[rid] = {
+        'id': rid,
+        'label': str(entry.get('label') or rid),
+        'run_date': str(entry.get('run_date') or rid),
+        'init_utc': iso_utc(init_dt),
+        'hours': hours,
+        'products': products,
+        'snow_ratios': snow_ratios,
+        'updated_utc': str(entry.get('updated_utc') or iso_utc(now_utc)),
+    }
+
+manifest_runs = sorted(
+    merged.values(),
+    key=lambda item: parse_iso_utc(item.get('init_utc')) or datetime.min.replace(tzinfo=timezone.utc),
+    reverse=True,
 )
-html = f"""
+valid_run_ids = {item['id'] for item in manifest_runs}
+if RUNS_ROOT_DIR.exists():
+    for child in RUNS_ROOT_DIR.iterdir():
+        if child.is_dir() and child.name not in valid_run_ids:
+            shutil.rmtree(child, ignore_errors=True)
+
+manifest_payload = {
+    'generated_utc': iso_utc(now_utc),
+    'history_hours': RUN_HISTORY_HOURS,
+    'default_run_id': RUN_ID,
+    'snow_products': sorted(SNOW_PRODUCT_KEYS),
+    'product_labels': {key: label for key, label, _, _ in PRODUCT_OPTIONS},
+    'runs': manifest_runs,
+}
+with manifest_path.open('w', encoding='utf-8') as f:
+    json.dump(manifest_payload, f, indent=2)
+
+manifest_json = json.dumps(manifest_payload, separators=(',', ':'))
+html_template = """
 <!DOCTYPE html>
 <html>
 <head>
     <title>WN2 Multi-Product Viewer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body {{
+        body {
             background:#1f1f1f;
             color:#efefef;
             font-family:system-ui, sans-serif;
             text-align:center;
             margin:0;
-            padding-bottom:136px;
-        }}
-        .wrap {{ max-width:1240px; margin:0 auto; padding:14px 10px 18px; }}
-        .map-wrap {{ background:#111; border:1px solid #4f4f4f; }}
-        img {{ width:100%; height:auto; display:block; background:#111; }}
-        button {{
+            padding-bottom:168px;
+        }
+        .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 18px; }
+        .map-wrap { background:#111; border:1px solid #4f4f4f; }
+        img { width:100%; height:auto; display:block; background:#111; }
+        button {
             padding:10px 16px;
             font-size:16px;
             cursor:pointer;
@@ -1633,22 +1840,34 @@ html = f"""
             background:#2d2d2d;
             color:#f1f1f1;
             border-radius:8px;
-        }}
-        select {{
+        }
+        select {
             padding:8px 10px;
             font-size:15px;
             border-radius:8px;
             border:1px solid #666;
             background:#2a2a2a;
             color:#f1f1f1;
-        }}
-        #label {{
+            min-width:120px;
+        }
+        .meta {
+            margin:4px 0 10px;
+            font-size:14px;
+            color:#cecece;
+        }
+        #status {
+            min-height:20px;
+            margin-bottom:10px;
+            color:#ffc9b3;
+            font-size:14px;
+        }
+        #label {
             display:inline-block;
             min-width:120px;
             font-weight:700;
             letter-spacing:0.03em;
-        }}
-        .bottom-controls {{
+        }
+        .bottom-controls {
             position:fixed;
             left:0;
             right:0;
@@ -1657,8 +1876,8 @@ html = f"""
             border-top:1px solid #3c3c3c;
             padding:10px 10px 12px;
             box-shadow:0 -6px 16px rgba(0, 0, 0, 0.35);
-        }}
-        .row {{
+        }
+        .row {
             max-width:1240px;
             margin:0 auto;
             display:flex;
@@ -1666,24 +1885,26 @@ html = f"""
             justify-content:center;
             flex-wrap:wrap;
             gap:10px;
-        }}
-        #hourSlider {{
+        }
+        #hourSlider {
             width:min(960px, 94vw);
             height:34px;
             touch-action:pan-x;
-        }}
-        @media (max-width: 760px) {{
-            h2 {{ font-size:20px; margin:10px 0; }}
-            button {{ font-size:14px; padding:8px 12px; }}
-            select {{ font-size:14px; }}
-            #label {{ min-width:86px; }}
-            body {{ padding-bottom:160px; }}
-        }}
+        }
+        @media (max-width: 760px) {
+            h2 { font-size:20px; margin:10px 0; }
+            button { font-size:14px; padding:8px 12px; }
+            select { font-size:14px; min-width:96px; }
+            #label { min-width:86px; }
+            body { padding-bottom:210px; }
+        }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <h2>WeatherNext 2 Map Viewer: {run_date}</h2>
+        <h2 id="title">WeatherNext 2 Map Viewer</h2>
+        <div id="meta" class="meta"></div>
+        <div id="status"></div>
         <div class="map-wrap">
             <img id="map" src="" alt="WN2 map">
         </div>
@@ -1691,10 +1912,14 @@ html = f"""
 
     <div class="bottom-controls">
         <div class="row">
+            <label for="run">Run:</label>
+            <select id="run"></select>
             <label for="product">Map:</label>
-            <select id="product">
-{product_options_html}
-            </select>
+            <select id="product"></select>
+            <label for="snowRatio">Snow Ratio:</label>
+            <select id="snowRatio"></select>
+        </div>
+        <div class="row" style="margin-top:8px;">
             <button id="prevBtn">Prev</button>
             <span id="label">Hour ---</span>
             <button id="nextBtn">Next</button>
@@ -1705,56 +1930,185 @@ html = f"""
     </div>
 
     <script>
-        const hours = {HOURS};
+        const manifest = __MANIFEST_JSON__;
+        const runs = Array.isArray(manifest.runs) ? manifest.runs : [];
+        const snowProducts = new Set(Array.isArray(manifest.snow_products) ? manifest.snow_products : []);
+        const productLabels = (manifest.product_labels && typeof manifest.product_labels === 'object') ? manifest.product_labels : {};
+        let activeHours = [];
         let idx = 0;
 
         const mapEl = document.getElementById('map');
+        const titleEl = document.getElementById('title');
+        const metaEl = document.getElementById('meta');
+        const statusEl = document.getElementById('status');
         const labelEl = document.getElementById('label');
+        const runEl = document.getElementById('run');
         const productEl = document.getElementById('product');
+        const ratioEl = document.getElementById('snowRatio');
         const sliderEl = document.getElementById('hourSlider');
         const prevBtn = document.getElementById('prevBtn');
         const nextBtn = document.getElementById('nextBtn');
 
-        function render() {{
-            if (!hours.length) {{
+        function normalizeIntList(values, minValue, maxValue) {
+            if (!Array.isArray(values)) return [];
+            const out = [];
+            for (const raw of values) {
+                const n = Number(raw);
+                if (!Number.isInteger(n)) continue;
+                if (minValue !== null && n < minValue) continue;
+                if (maxValue !== null && n > maxValue) continue;
+                out.push(n);
+            }
+            return Array.from(new Set(out)).sort((a, b) => a - b);
+        }
+
+        function getCurrentRun() {
+            const selected = runEl.value;
+            for (const run of runs) {
+                if (String(run.id) === selected) return run;
+            }
+            return runs.length ? runs[0] : null;
+        }
+
+        function setSelectOptions(selectEl, values, labelFn) {
+            const prev = selectEl.value;
+            selectEl.innerHTML = '';
+            for (const value of values) {
+                const option = document.createElement('option');
+                option.value = String(value);
+                option.textContent = labelFn(value);
+                selectEl.appendChild(option);
+            }
+            for (const value of values) {
+                if (String(value) === prev) {
+                    selectEl.value = prev;
+                    return;
+                }
+            }
+            if (values.length) {
+                selectEl.value = String(values[0]);
+            }
+        }
+
+        function buildFrameName(product, hour, ratio) {
+            const hourStr = String(hour).padStart(3, '0');
+            if (snowProducts.has(product)) {
+                const ratioStr = String(ratio).padStart(2, '0');
+                return product + '_r' + ratioStr + '_' + hourStr + '.jpg';
+            }
+            return product + '_' + hourStr + '.jpg';
+        }
+
+        function syncRunScopedControls() {
+            const run = getCurrentRun();
+            if (!run) {
+                activeHours = [];
+                productEl.innerHTML = '';
+                ratioEl.innerHTML = '';
+                sliderEl.max = '0';
+                sliderEl.value = '0';
+                idx = 0;
+                return;
+            }
+            const products = Array.isArray(run.products) ? run.products : [];
+            const ratios = normalizeIntList(run.snow_ratios, 10, 20);
+            const hours = normalizeIntList(run.hours, 0, null);
+            setSelectOptions(productEl, products, (key) => productLabels[key] || key);
+            setSelectOptions(ratioEl, ratios.length ? ratios : [10], (ratio) => ratio + ':1');
+
+            const previousHour = activeHours[idx];
+            activeHours = hours;
+            if (activeHours.length === 0) {
+                idx = 0;
+            } else {
+                const found = activeHours.indexOf(previousHour);
+                idx = found >= 0 ? found : 0;
+            }
+            sliderEl.max = String(Math.max(0, activeHours.length - 1));
+            sliderEl.value = String(idx);
+        }
+
+        function render() {
+            const run = getCurrentRun();
+            if (!run || !activeHours.length || !productEl.value) {
                 mapEl.src = '';
                 labelEl.innerText = 'No hours';
+                titleEl.innerText = 'WeatherNext 2 Map Viewer';
+                metaEl.innerText = '';
+                statusEl.innerText = runs.length ? 'No frames available for this run.' : 'No runs available.';
                 return;
-            }}
-            const hour = hours[idx];
-            const hourStr = hour.toString().padStart(3, '0');
-            const product = productEl.value;
-            mapEl.src = `${{product}}_${{hourStr}}.jpg`;
-            labelEl.innerText = `Hour ${{hourStr}}`;
-        }}
+            }
 
-        function change(dir) {{
-            if (!hours.length) return;
-            idx = (idx + dir + hours.length) % hours.length;
+            const product = productEl.value;
+            const isSnow = snowProducts.has(product);
+            ratioEl.disabled = !isSnow;
+            if (!isSnow) {
+                ratioEl.title = 'Snow ratio applies to snowfall accumulation maps only.';
+            } else {
+                ratioEl.title = '';
+            }
+
+            const hour = activeHours[idx];
+            const ratio = Number(ratioEl.value || 10);
+            const frameName = buildFrameName(product, hour, ratio);
+            const runId = String(run.id);
+            const runLabel = run.label || runId;
+            const initUtc = run.init_utc || 'unknown';
+            const hourStr = String(hour).padStart(3, '0');
+
+            mapEl.src = 'runs/' + runId + '/' + frameName;
+            mapEl.alt = runId + ' ' + product + ' hour ' + hourStr;
+            labelEl.innerText = 'Hour ' + hourStr;
+            titleEl.innerText = 'WeatherNext 2 Map Viewer: ' + (run.run_date || runLabel);
+            metaEl.innerText = 'Run ' + runLabel + ' | Init ' + initUtc + (isSnow ? ' | Ratio ' + ratio + ':1' : '');
+            statusEl.innerText = '';
+        }
+
+        function change(dir) {
+            if (!activeHours.length) return;
+            idx = (idx + dir + activeHours.length) % activeHours.length;
             sliderEl.value = String(idx);
             render();
-        }}
+        }
 
-        sliderEl.addEventListener('input', () => {{
+        mapEl.addEventListener('error', () => {
+            statusEl.innerText = 'Selected frame is missing for this run/product/hour/ratio.';
+        });
+        mapEl.addEventListener('load', () => {
+            statusEl.innerText = '';
+        });
+
+        runEl.addEventListener('change', () => {
+            syncRunScopedControls();
+            render();
+        });
+        productEl.addEventListener('change', render);
+        ratioEl.addEventListener('change', render);
+        sliderEl.addEventListener('input', () => {
             idx = Number(sliderEl.value);
             render();
-        }});
-        productEl.addEventListener('change', render);
+        });
         prevBtn.addEventListener('click', () => change(-1));
         nextBtn.addEventListener('click', () => change(1));
 
-        if (hours.length > 0) {{
-            sliderEl.max = String(hours.length - 1);
-            sliderEl.value = '0';
-            render();
-        }} else {{
-            render();
-        }}
+        setSelectOptions(runEl, runs.map((run) => run.id), (id) => {
+            const run = runs.find((item) => String(item.id) === String(id));
+            return run ? (run.label || String(id)) : String(id);
+        });
+        if (runs.length) {
+            const defaultId = runs.some((run) => String(run.id) === String(manifest.default_run_id))
+                ? String(manifest.default_run_id)
+                : String(runs[0].id);
+            runEl.value = defaultId;
+        }
+        syncRunScopedControls();
+        render();
     </script>
 </body>
 </html>
 """
+html = html_template.replace('__MANIFEST_JSON__', manifest_json)
 
-with open(f'{OUTPUT}/index.html', 'w') as f:
+with open(f'{OUTPUT}/index.html', 'w', encoding='utf-8') as f:
     f.write(html)
 

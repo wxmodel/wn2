@@ -36,6 +36,16 @@ on:
           - "120"
           - "180"
           - "240"
+      snow_ratio_csv:
+        description: "Snow ratios to render (10-20, comma-separated; e.g. 10,12,15,20)"
+        required: false
+        default: "10,12,15,20"
+        type: string
+      run_history_hours:
+        description: "Run history retention window in hours (6-72)"
+        required: false
+        default: "24"
+        type: string
       run_nh_z500a:
         description: "Generate NH 500mb anomaly"
         required: false
@@ -103,6 +113,25 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Restore Recent Runs From gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p public
+          REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "${REMOTE_URL}" gh-pages >/dev/null 2>&1; then
+            git clone --depth 1 --branch gh-pages "${REMOTE_URL}" .gh-pages
+            if [ -f .gh-pages/runs_manifest.json ]; then
+              cp .gh-pages/runs_manifest.json public/runs_manifest.json
+            fi
+            if [ -d .gh-pages/runs ]; then
+              mkdir -p public/runs
+              cp -R .gh-pages/runs/. public/runs/
+            fi
+          else
+            echo "No gh-pages branch yet; starting with a fresh public/ directory."
+          fi
+
       - name: Run Map Generator
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
@@ -110,6 +139,8 @@ jobs:
           HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || (github.event_name == 'workflow_dispatch' && github.event.inputs.hour_range_preset != 'full' && github.event.inputs.hour_range_preset || '') }}
           HOURS_LIMIT: ${{ github.event_name == 'push' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '') }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
+          SNOW_RATIO_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.snow_ratio_csv || '10,12,15,20' }}
+          RUN_HISTORY_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_history_hours || '24' }}
           FAST_RENDER: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '1' || '' }}
           EXPORT_WORKERS: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '2' || '2' }}
           WN2_RUN_NH_Z500A: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_nh_z500a == 'true' && '1' || '') }}
