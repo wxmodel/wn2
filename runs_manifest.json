@@ -1,7 +1,7 @@
 {
-  "generated_utc": "2026-02-24T03:11:51Z",
+  "generated_utc": "2026-02-24T03:23:19Z",
   "history_hours": 24,
-  "default_run_id": "2026022206",
+  "default_run_id": "2026022212",
   "snow_products": [
     "conus_snow_accum",
     "ne_snow_accum",
