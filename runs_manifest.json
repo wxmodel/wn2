@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-02-24T03:47:57Z",
+  "generated_utc": "2026-02-24T04:07:17Z",
   "history_hours": 72,
   "default_run_id": "2026022212",
   "snow_products": [
@@ -113,17 +113,16 @@
         36
       ],
       "products": [
-        "ne_snow_accum",
         "ne_zoom_snow_accum"
       ],
       "snow_ratios": [
-        10,
-        12,
-        13,
         14,
-        15
+        15,
+        16,
+        17,
+        18
       ],
-      "updated_utc": "2026-02-24T03:47:57Z"
+      "updated_utc": "2026-02-24T04:07:17Z"
     }
   ]
 }
