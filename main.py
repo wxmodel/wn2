@@ -432,7 +432,8 @@ def parse_utc_timestamp(raw):
     if not text:
         return None
 
-    iso_text = text[:-1] + '+00:00' if text.endswith('Z') else text
+    # Accept both trailing Z and z from workflow inputs.
+    iso_text = text[:-1] + '+00:00' if text.lower().endswith('z') else text
     try:
         dt = datetime.fromisoformat(iso_text)
         if dt.tzinfo is None:
@@ -517,6 +518,8 @@ print(f'[{ts()}] Snow ratios selected: {SNOW_RATIOS}')
 print(f'[{ts()}] Run history retention: {RUN_HISTORY_HOURS}h')
 if run_init_utc_env:
     print(f'[{ts()}] Requested run init override: {run_init_utc_env}')
+elif event_name == 'workflow_dispatch':
+    print(f'[{ts()}] RUN_INIT_UTC not set for workflow_dispatch; selecting latest available run.')
 
 
 def _infer_available_hours(run_collection):
