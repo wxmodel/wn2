@@ -94,7 +94,7 @@ on:
   
 concurrency:
   group: wn2-pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -145,7 +145,7 @@ jobs:
           HOURS_LIMIT: ${{ github.event_name == 'push' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '') }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
           RUN_INIT_UTC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_init_utc || '' }}
-          SNOW_RATIO_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.snow_ratio_csv || '10,12,15,20' }}
+          SNOW_RATIO_CSV: ${{ github.event_name == 'schedule' && '10,12,15,20' || (github.event_name == 'workflow_dispatch' && github.event.inputs.snow_ratio_csv || '10,12,15,20') }}
           RUN_HISTORY_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_history_hours || '24' }}
           FAST_RENDER: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '1' || '' }}
           EXPORT_WORKERS: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && '2' || '2' }}

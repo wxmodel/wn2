@@ -37,6 +37,11 @@ WN2_PRECIP_6H_BAND = 'total_precipitation_6hr'
 WN2_T2M_BAND = '2m_temperature'
 WN2_T850_BAND = '850_temperature'
 WN2_T700_BAND = '700_temperature'
+CLIMO_ASSET = 'NASA/GSFC/MERRA/slv/2'
+CLIMO_H500_BAND = 'H500'
+CLIMO_START_YEAR = 1991
+CLIMO_END_YEAR = 2020
+CLIMO_DOY_WINDOW_DAYS = 7
 OUTPUT = 'public'  # The folder that becomes the website
 os.makedirs(OUTPUT, exist_ok=True)
 DEBUG_BANDS = os.environ.get('DEBUG_BANDS') == '1'
@@ -255,6 +260,8 @@ ANOMALY_PALETTE = [
     '#f7f7f7',
     '#ffe08a', '#ffad5a', '#ff6b3a', '#d7301f', '#7f0000'
 ]
+ANOMALY_MIN_M = -300
+ANOMALY_MAX_M = 300
 VORTICITY_PALETTE = ['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f']
 RAIN_RATE_PALETTE = ['#a9ee80', '#7ad35a', '#4eb744', '#2f9637', '#f7ea00', '#ffbf00', '#ff8a00', '#ff4200', '#b70000', '#c21cff']
 SNOW_RATE_PALETTE = ['#0a1f6f', '#0d2f8f', '#1448b1', '#1f66cc', '#2d84df', '#45a6ef', '#63c2ff']
@@ -295,6 +302,12 @@ SNOW_ACCUM_STEP_SEGMENTS_IN = [
 ]
 SNOW_ACCUM_MAX_IN = 32.0
 SNOW_ACCUM_OVER_COLOR = '#d60000'
+CLIMO_H500_COLLECTION = (
+    ee.ImageCollection(CLIMO_ASSET)
+    .select(CLIMO_H500_BAND)
+    .filter(ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year'))
+)
+CLIMO_H500_CACHE = {}
 
 PRODUCT_OPTIONS = [
     ('nh_z500a', 'NH 500mb Height Anomaly', 'nh_z500a_*.jpg', run_nh_z500a_env),
@@ -693,10 +706,51 @@ def basemap_overlay(region_geom, land_color='#ececec', ocean_color='#cfe0ea', la
     return ee.ImageCollection([ocean, land]).mosaic()
 
 
-def pseudo_z500_anomaly_m(height_dam, radius_px=24):
-    # Remove the broad background field so synoptic anomalies stand out.
-    broad = height_dam.resample('bilinear').focalMean(radius=radius_px, kernelType='circle', units='pixels')
-    return height_dam.subtract(broad).multiply(10)
+def _wrap_day_of_year_filter(start_doy, end_doy):
+    if start_doy >= 1 and end_doy <= 366:
+        return ee.Filter.calendarRange(start_doy, end_doy, 'day_of_year')
+    if start_doy < 1:
+        return ee.Filter.Or(
+            ee.Filter.calendarRange(start_doy + 366, 366, 'day_of_year'),
+            ee.Filter.calendarRange(1, end_doy, 'day_of_year'),
+        )
+    return ee.Filter.Or(
+        ee.Filter.calendarRange(start_doy, 366, 'day_of_year'),
+        ee.Filter.calendarRange(1, end_doy - 366, 'day_of_year'),
+    )
+
+
+def z500_climo_1991_2020_m(valid_utc):
+    doy = valid_utc.timetuple().tm_yday
+    hour = int(valid_utc.hour)
+    cache_key = (doy, hour)
+    cached = CLIMO_H500_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    start_doy = doy - CLIMO_DOY_WINDOW_DAYS
+    end_doy = doy + CLIMO_DOY_WINDOW_DAYS
+    hour_collection = CLIMO_H500_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
+    fallback_collection = CLIMO_H500_COLLECTION.filter(
+        ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+    ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    climo = ee.Image(
+        ee.Algorithms.If(
+            window_collection.size().gt(0),
+            window_collection.mean(),
+            fallback_collection.mean(),
+        )
+    ).rename('z500_climo_m').resample('bilinear')
+    CLIMO_H500_CACHE[cache_key] = climo
+    return climo
+
+
+def z500_anomaly_m(img, hour):
+    valid_utc = RUN_INIT_UTC + timedelta(hours=int(hour))
+    forecast_height_m = img.select(WN2_Z500_BAND).divide(9.80665)
+    climo_height_m = z500_climo_1991_2020_m(valid_utc)
+    return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
 
 
 def shrink_dimensions(dimensions):
@@ -876,9 +930,19 @@ def _draw_legend(draw, product_key, width, y, snow_ratio=10):
 
     if product_key in ('nh_z500a', 'na_z500a'):
         _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
-        draw.text((bar_x, y + 2), '500-hPa Height Anomaly (m)', fill=(22, 22, 22), font=label_font)
+        draw.text((bar_x, y + 2), '500-hPa Height Anomaly (m, 1991-2020 normal)', fill=(22, 22, 22), font=label_font)
         _draw_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, ANOMALY_PALETTE)
-        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [-100, -70, -40, -20, 0, 20, 40, 70, 100], -100, 100, tick_font)
+        _draw_ticks(
+            draw,
+            bar_x,
+            bar_y,
+            bar_w,
+            bar_h,
+            [-300, -200, -100, -50, 0, 50, 100, 200, 300],
+            ANOMALY_MIN_M,
+            ANOMALY_MAX_M,
+            tick_font,
+        )
         return
 
     if product_key == 'conus_vort500':
@@ -969,8 +1033,8 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
     from PIL import Image, ImageDraw
 
     product_titles = {
-        'nh_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly (m) | Northern Hemisphere',
-        'na_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly (m) | North America',
+        'nh_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly vs 1991-2020 (m) | Northern Hemisphere',
+        'na_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly vs 1991-2020 (m) | North America',
         'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | CONUS',
         'ne_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | Northeast',
         'conus_vort500': 'WN2 0.25 deg | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
@@ -1136,10 +1200,14 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
                 continue
 
             lat = 90.0 - r * (90.0 - lat_min)
-            lon = lon0 + math.degrees(math.atan2(dx, -dy))
+            lon = lon0 - math.degrees(math.atan2(dx, -dy))
             lon = ((lon + 180.0) % 360.0) - 180.0
 
             sx = int(round((lon + 180.0) / 360.0 * (sw - 1)))
+            if sx < 0:
+                sx = 0
+            elif sx >= sw:
+                sx = sw - 1
             sy = int(round((lat_max - lat) / (lat_max - lat_min) * (sh - 1)))
             if sy < 0:
                 sy = 0
@@ -1153,7 +1221,7 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
         rr = (90.0 - lat_line) / (90.0 - lat_min) * radius
         draw.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), outline=(120, 120, 120), width=1)
     for lon_deg in range(0, 360, 30):
-        ang = math.radians(lon_deg)
+        ang = math.radians(lon0 - lon_deg)
         x2 = cx + radius * math.sin(ang)
         y2 = cy - radius * math.cos(ang)
         draw.line((cx, cy, x2, y2), fill=(120, 120, 120), width=1)
@@ -1228,17 +1296,16 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         export_crs = None
         map_dims = ANOMALY_DIMS
 
-    anomaly_radius = 30 if prefix == 'nh_z500a' else 20
-    anomaly_min = -100 if prefix == 'nh_z500a' else -100
-    anomaly_max = 100 if prefix == 'nh_z500a' else 100
     forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10)
     if prefix != 'nh_z500a':
         forecast_height_dam = forecast_height_dam.clip(region_geom)
-    anomaly_m = pseudo_z500_anomaly_m(forecast_height_dam, radius_px=anomaly_radius)
+    anomaly_m = z500_anomaly_m(img, h)
+    if prefix != 'nh_z500a':
+        anomaly_m = anomaly_m.clip(region_geom)
 
     anomaly_layer = anomaly_m.visualize(
-        min=anomaly_min,
-        max=anomaly_max,
+        min=ANOMALY_MIN_M,
+        max=ANOMALY_MAX_M,
         palette=ANOMALY_PALETTE,
     )
     z500_contours = contour_overlay(forecast_height_dam, interval=6, color='#1f1f1f', opacity=0.84)
@@ -1827,7 +1894,11 @@ for entry in [current_entry] + existing_entries:
     init_dt = parse_iso_utc(entry.get('init_utc'))
     if init_dt is None:
         continue
-    if init_dt < cutoff_utc:
+    # Retain runs by publication/update recency so manual backfills remain visible
+    # for the configured history window even when their model init is older.
+    updated_dt = parse_iso_utc(entry.get('updated_utc'))
+    retention_dt = updated_dt or init_dt
+    if rid != RUN_ID and retention_dt < cutoff_utc:
         continue
     run_dir = RUNS_ROOT_DIR / rid
     if rid != RUN_ID and not run_dir.exists():
