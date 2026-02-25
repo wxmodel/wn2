@@ -114,7 +114,7 @@
     </div>
 
     <script>
-        const manifest = {"generated_utc":"2026-02-25T00:31:54Z","history_hours":6,"default_run_id":"2026021912","snow_products":["conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"product_labels":{"nh_z500a":"NH 500mb Height Anomaly","na_z500a":"North America 500mb Height Anomaly","conus_mslp_ptype":"CONUS MSLP + P-Type","ne_mslp_ptype":"Northeast MSLP + P-Type","conus_vort500":"CONUS 500mb Vorticity","conus_snow_accum":"CONUS Snowfall Accumulation","ne_snow_accum":"Northeast Snowfall Accumulation","ne_zoom_snow_accum":"New England Zoom Snowfall Accumulation"},"runs":[]};
+        const manifest = {"generated_utc":"2026-02-25T00:46:26Z","history_hours":72,"default_run_id":"2026021900","snow_products":["conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"product_labels":{"nh_z500a":"NH 500mb Height Anomaly","na_z500a":"North America 500mb Height Anomaly","conus_mslp_ptype":"CONUS MSLP + P-Type","ne_mslp_ptype":"Northeast MSLP + P-Type","conus_vort500":"CONUS 500mb Vorticity","conus_snow_accum":"CONUS Snowfall Accumulation","ne_snow_accum":"Northeast Snowfall Accumulation","ne_zoom_snow_accum":"New England Zoom Snowfall Accumulation"},"runs":[]};
         const runs = Array.isArray(manifest.runs) ? manifest.runs : [];
         const snowProducts = new Set(Array.isArray(manifest.snow_products) ? manifest.snow_products : []);
         const productLabels = (manifest.product_labels && typeof manifest.product_labels === 'object') ? manifest.product_labels : {};
