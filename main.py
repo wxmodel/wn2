@@ -41,22 +41,22 @@ CLIMO_ASSET = 'NASA/GSFC/MERRA/slv/2'
 CLIMO_H500_BAND = 'H500'
 CLIMO_START_YEAR = 1991
 CLIMO_END_YEAR = 2020
-CLIMO_DOY_WINDOW_DAYS = 7
+CLIMO_DOY_WINDOW_DAYS = 0
 OUTPUT = 'public'  # The folder that becomes the website
 os.makedirs(OUTPUT, exist_ok=True)
 DEBUG_BANDS = os.environ.get('DEBUG_BANDS') == '1'
 TARGET_CRS = 'EPSG:4326'
 NH_SOURCE_REGION = [-179.5, 20.0, 179.5, 89.0]
-NH_W_BOUNDS = [-180.0, 20.0, 0.0, 89.0]
-NH_E_BOUNDS = [0.0, 20.0, 180.0, 89.0]
+NH_W_BOUNDS = [-179.5, 20.0, 0.0, 89.0]
+NH_E_BOUNDS = [0.0, 20.0, 179.5, 89.0]
 try:
     NH_LON0 = float(os.environ.get('NH_LON0', '80.0'))
 except ValueError:
     NH_LON0 = 80.0
 
 # Regions
-NH_W = ee.Geometry.Rectangle([-180.0, 20.0, 0.0, 89.5], geodesic=False)
-NH_E = ee.Geometry.Rectangle([0.0, 20.0, 180.0, 89.5], geodesic=False)
+NH_W = ee.Geometry.Rectangle([-179.5, 20.0, 0.0, 89.5], geodesic=False)
+NH_E = ee.Geometry.Rectangle([0.0, 20.0, 179.5, 89.5], geodesic=False)
 NH_REGION = NH_W.union(NH_E, maxError=1)
 NA_REGION = ee.Geometry.Rectangle([-170.0, 10.0, -45.0, 80.0], geodesic=False)
 CONUS_REGION = ee.Geometry.Rectangle([-127.0, 22.0, -65.0, 50.0], geodesic=False)
@@ -236,6 +236,9 @@ if FAST_RENDER:
     SNOW_NE_DIMS = '1200x980'
     NH_SOURCE_DIMS = '1800x360'
     NH_POLAR_DIMS = 920
+    ANOMALY_NA_SCALE_M = 40000
+    ANOMALY_NH_SCALE_M = 55000
+    ANOMALY_WORK_SCALE_M = 180000
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -246,6 +249,9 @@ else:
     SNOW_NE_DIMS = '1400x1120'
     NH_SOURCE_DIMS = '2200x440'
     NH_POLAR_DIMS = 1080
+    ANOMALY_NA_SCALE_M = 32000
+    ANOMALY_NH_SCALE_M = 45000
+    ANOMALY_WORK_SCALE_M = 120000
 
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
@@ -706,6 +712,11 @@ def basemap_overlay(region_geom, land_color='#ececec', ocean_color='#cfe0ea', la
     return ee.ImageCollection([ocean, land]).mosaic()
 
 
+def pseudo_z500_anomaly_m(height_dam, radius_px=20):
+    broad = height_dam.resample('bilinear').focalMean(radius=radius_px, kernelType='circle', units='pixels')
+    return height_dam.subtract(broad).multiply(10).rename('z500_pseudo_anomaly_m')
+
+
 def _wrap_day_of_year_filter(start_doy, end_doy):
     if start_doy >= 1 and end_doy <= 366:
         return ee.Filter.calendarRange(start_doy, end_doy, 'day_of_year')
@@ -720,10 +731,10 @@ def _wrap_day_of_year_filter(start_doy, end_doy):
     )
 
 
-def z500_climo_1991_2020_m(valid_utc):
+def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global'):
     doy = valid_utc.timetuple().tm_yday
     hour = int(valid_utc.hour)
-    cache_key = (doy, hour)
+    cache_key = (doy, hour, cache_tag)
     cached = CLIMO_H500_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -731,10 +742,14 @@ def z500_climo_1991_2020_m(valid_utc):
     start_doy = doy - CLIMO_DOY_WINDOW_DAYS
     end_doy = doy + CLIMO_DOY_WINDOW_DAYS
     hour_collection = CLIMO_H500_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    if region_geom is not None:
+        hour_collection = hour_collection.map(lambda im: ee.Image(im).clip(region_geom))
     window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
     fallback_collection = CLIMO_H500_COLLECTION.filter(
         ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    if region_geom is not None:
+        fallback_collection = fallback_collection.map(lambda im: ee.Image(im).clip(region_geom))
     climo = ee.Image(
         ee.Algorithms.If(
             window_collection.size().gt(0),
@@ -746,10 +761,15 @@ def z500_climo_1991_2020_m(valid_utc):
     return climo
 
 
-def z500_anomaly_m(img, hour):
+def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global'):
     valid_utc = RUN_INIT_UTC + timedelta(hours=int(hour))
     forecast_height_m = img.select(WN2_Z500_BAND).divide(9.80665)
-    climo_height_m = z500_climo_1991_2020_m(valid_utc)
+    climo_height_m = z500_climo_1991_2020_m(valid_utc, region_geom=region_geom, cache_tag=cache_tag)
+    if region_geom is not None:
+        forecast_height_m = forecast_height_m.clip(region_geom)
+        climo_height_m = climo_height_m.clip(region_geom)
+    forecast_height_m = forecast_height_m.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
+    climo_height_m = climo_height_m.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
     return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
 
 
@@ -777,6 +797,20 @@ def split_nh_dimensions(source_dims):
         except ValueError:
             return '1100x440'
     return '1100x440'
+
+
+def inset_region_bbox(region, lon_pad=0.6, lat_pad=0.6):
+    if not isinstance(region, list) or len(region) != 4:
+        return region
+    west, south, east, north = [float(v) for v in region]
+    if east - west <= 2 * lon_pad or north - south <= 2 * lat_pad:
+        return region
+    return [
+        max(-179.9, west + lon_pad),
+        max(-89.9, south + lat_pad),
+        min(179.9, east - lon_pad),
+        min(89.9, north - lat_pad),
+    ]
 
 
 def load_font(size, bold=False):
@@ -1253,40 +1287,58 @@ def stitch_horizontal(left_file, right_file, out_file):
 def export_composite(composite, out_file, region, dimensions=1600, scale=None, crs=None):
     print(f'[{ts()}] Exporting {out_file}...')
     t0 = time.time()
-    params = {
-        'region': region,
-        'format': 'jpg',
-    }
-    if crs is not None:
-        params['crs'] = crs
-    elif scale is not None:
-        params['crs'] = TARGET_CRS
-    if scale is not None:
-        params['scale'] = scale
-    else:
-        params['dimensions'] = dimensions
-    try:
-        download_thumb(composite, out_file, params)
-    except requests.HTTPError as e:
-        response = getattr(e, 'response', None)
-        status = response.status_code if response is not None else None
-        body = response.text if response is not None else str(e)
-        if status == 400 and 'User memory limit exceeded' in body:
-            print(f'[{ts()}] Retrying {out_file} with smaller dimensions due to memory limit...')
-            retry_params = dict(params)
-            if scale is not None:
-                retry_params['scale'] = int(scale * 1.4)
-            else:
-                retry_params['dimensions'] = shrink_dimensions(dimensions)
-            download_thumb(composite, out_file, retry_params)
+    current_region = region
+    current_dimensions = dimensions
+    current_scale = scale
+
+    for attempt in range(1, 5):
+        params = {
+            'region': current_region,
+            'format': 'jpg',
+        }
+        if crs is not None:
+            params['crs'] = crs
+        elif current_scale is not None:
+            params['crs'] = TARGET_CRS
+        if current_scale is not None:
+            params['scale'] = current_scale
         else:
+            params['dimensions'] = current_dimensions
+
+        try:
+            download_thumb(composite, out_file, params)
+            print(f'[{ts()}] Export complete for {out_file} ({time.time() - t0:.2f}s)')
+            return
+        except requests.HTTPError as e:
+            response = getattr(e, 'response', None)
+            status = response.status_code if response is not None else None
+            body = response.text if response is not None else str(e)
+            is_memory = status == 400 and 'User memory limit exceeded' in body
+            is_transform = status == 400 and 'Unable to transform edge' in body
+
+            if attempt < 4 and is_memory:
+                if current_scale is not None:
+                    current_scale = int(max(2000, current_scale * 1.45))
+                else:
+                    current_dimensions = shrink_dimensions(current_dimensions)
+                print(f'[{ts()}] Retry {attempt}/3 for {out_file} after memory limit.')
+                continue
+
+            if attempt < 4 and is_transform:
+                new_region = inset_region_bbox(current_region)
+                if new_region != current_region:
+                    current_region = new_region
+                    print(f'[{ts()}] Retry {attempt}/3 for {out_file} with inset region to bypass transform edge.')
+                    continue
+
             raise
+
     print(f'[{ts()}] Export complete for {out_file} ({time.time() - t0:.2f}s)')
 
 
 def generate_z500_anomaly_map(img, h, region, prefix):
     if prefix == 'nh_z500a':
-        region_geom = WORLD_REGION
+        region_geom = NH_REGION
         export_region = NH_SOURCE_REGION
         export_crs = None
         map_dims = NH_SOURCE_DIMS
@@ -1296,49 +1348,65 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         export_crs = None
         map_dims = ANOMALY_DIMS
 
-    forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10)
-    if prefix != 'nh_z500a':
-        forecast_height_dam = forecast_height_dam.clip(region_geom)
-    anomaly_m = z500_anomaly_m(img, h)
-    if prefix != 'nh_z500a':
-        anomaly_m = anomaly_m.clip(region_geom)
+    forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
 
-    anomaly_layer = anomaly_m.visualize(
-        min=ANOMALY_MIN_M,
-        max=ANOMALY_MAX_M,
-        palette=ANOMALY_PALETTE,
-    )
-    z500_contours = contour_overlay(forecast_height_dam, interval=6, color='#1f1f1f', opacity=0.84)
-    overlays = [
-        basemap_overlay(region_geom, land_color='#d8d8d8', ocean_color='#d9e5ee'),
-        anomaly_layer,
-        z500_contours,
-        border_overlay(include_states=False),
-    ]
-    composite = ee.ImageCollection(overlays).mosaic()
+    def _build_composite(anomaly_field):
+        anomaly_layer = anomaly_field.visualize(
+            min=ANOMALY_MIN_M,
+            max=ANOMALY_MAX_M,
+            palette=ANOMALY_PALETTE,
+        )
+        if prefix == 'nh_z500a':
+            # Keep NH background raster-only to avoid dateline vector transform errors.
+            base = ee.Image.constant(1).clip(region_geom).visualize(palette=['#d9e5ee'], opacity=1.0)
+            overlays = [base, anomaly_layer]
+        else:
+            z500_contours = contour_overlay(
+                forecast_height_dam.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M),
+                interval=6,
+                color='#1f1f1f',
+                opacity=0.84,
+            )
+            overlays = [
+                basemap_overlay(region_geom, land_color='#d8d8d8', ocean_color='#d9e5ee'),
+                anomaly_layer,
+                z500_contours,
+                border_overlay(include_states=False).clip(region_geom),
+            ]
+        return ee.ImageCollection(overlays).mosaic()
 
-    out_file = build_frame_path(prefix, h)
-    if prefix == 'nh_z500a':
-        west_file = str(RUN_OUTPUT_DIR / f'_tmp_nh_w_{h:03d}.jpg')
-        east_file = str(RUN_OUTPUT_DIR / f'_tmp_nh_e_{h:03d}.jpg')
-        split_dims = split_nh_dimensions(NH_SOURCE_DIMS)
-        export_composite(composite.clip(NH_W), west_file, NH_W_BOUNDS, dimensions=split_dims)
-        export_composite(composite.clip(NH_E), east_file, NH_E_BOUNDS, dimensions=split_dims)
-        stitch_horizontal(west_file, east_file, out_file)
-        os.remove(west_file)
-        os.remove(east_file)
-        remap_nh_to_polar(out_file, lon0=NH_LON0)
+    def _export_and_annotate(composite_image, use_scale=True):
+        out_file = build_frame_path(prefix, h)
+        if prefix == 'nh_z500a':
+            if use_scale:
+                export_composite(composite_image, out_file, NH_SOURCE_REGION, scale=ANOMALY_NH_SCALE_M, crs=TARGET_CRS)
+            else:
+                export_composite(composite_image, out_file, NH_SOURCE_REGION, dimensions=NH_SOURCE_DIMS)
+            remap_nh_to_polar(out_file, lon0=NH_LON0)
+            annotate_map_file(out_file, prefix, h)
+            return
+
+        export_composite(
+            composite_image,
+            out_file,
+            export_region,
+            dimensions=map_dims,
+            scale=(ANOMALY_NA_SCALE_M if use_scale else None),
+            crs=export_crs,
+        )
         annotate_map_file(out_file, prefix, h)
-        return
 
-    export_composite(
-        composite,
-        out_file,
-        export_region,
-        dimensions=map_dims,
-        crs=export_crs,
-    )
-    annotate_map_file(out_file, prefix, h)
+    true_anomaly = z500_anomaly_m(img, h, region_geom=region_geom, cache_tag=prefix)
+    try:
+        _export_and_annotate(_build_composite(true_anomaly), use_scale=True)
+    except Exception as e:
+        msg = str(e)
+        if 'User memory limit exceeded' not in msg and 'Unable to transform edge' not in msg:
+            raise
+        print(f'[{ts()}] {prefix} hour {h}: falling back to pseudo anomaly after EE export failure.')
+        radius = 26 if prefix == 'nh_z500a' else 20
+        pseudo_anomaly = pseudo_z500_anomaly_m(forecast_height_dam, radius_px=radius)
+        _export_and_annotate(_build_composite(pseudo_anomaly), use_scale=False)
 
 
 def derive_precip_phase(img, region_geom):
