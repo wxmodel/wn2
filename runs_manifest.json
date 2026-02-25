@@ -1,7 +1,7 @@
 {
-  "generated_utc": "2026-02-25T02:08:28Z",
+  "generated_utc": "2026-02-25T02:27:46Z",
   "history_hours": 72,
-  "default_run_id": "2026021906",
+  "default_run_id": "2026021900",
   "snow_products": [
     "conus_snow_accum",
     "ne_snow_accum",
@@ -84,16 +84,24 @@
       "run_date": "202602190000_202602190600_0",
       "init_utc": "2026-02-19T00:00:00Z",
       "hours": [
-        120
+        84,
+        90,
+        96,
+        102,
+        108,
+        114,
+        120,
+        126,
+        132
       ],
       "products": [
+        "ne_mslp_ptype",
         "ne_zoom_snow_accum"
       ],
       "snow_ratios": [
-        10,
         15
       ],
-      "updated_utc": "2026-02-25T01:50:34Z"
+      "updated_utc": "2026-02-25T02:27:46Z"
     },
     {
       "id": "2026021818",
