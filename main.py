@@ -2102,6 +2102,9 @@ html_template = """
     <title>WN2 Multi-Product Viewer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        :root {
+            --controls-h: 188px;
+        }
         body {
             background:#1f1f1f;
             color:#efefef;
@@ -2110,9 +2113,26 @@ html_template = """
             margin:0;
             padding-bottom:0;
         }
-        .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 18px; }
-        .map-wrap { background:#111; border:1px solid #4f4f4f; }
-        img { width:100%; height:auto; display:block; background:#111; }
+        .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 10px; }
+        .map-wrap {
+            background:#111;
+            border:1px solid #4f4f4f;
+            height:60vh;
+            min-height:220px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            overflow:hidden;
+        }
+        img {
+            width:auto;
+            height:auto;
+            max-width:100%;
+            max-height:100%;
+            object-fit:contain;
+            display:block;
+            background:#111;
+        }
         #title {
             margin:6px 0 10px;
             font-size:24px;
@@ -2150,7 +2170,7 @@ html_template = """
             bottom:0;
             background:#141414;
             border-top:1px solid #3c3c3c;
-            padding:10px 10px 12px;
+            padding:10px 10px calc(12px + env(safe-area-inset-bottom));
             box-shadow:0 -6px 16px rgba(0, 0, 0, 0.35);
         }
         .row {
@@ -2175,6 +2195,10 @@ html_template = """
             .bottom-controls { padding:10px 8px 12px; }
             .row { gap:8px; }
             #hourSlider { width:min(960px, 96vw); }
+            .map-wrap {
+                height:52vh;
+                min-height:160px;
+            }
         }
     </style>
 </head>
@@ -2215,7 +2239,9 @@ html_template = """
 
         const mapEl = document.getElementById('map');
         const titleEl = document.getElementById('title');
+        const mapWrapEl = document.querySelector('.map-wrap');
         const controlsEl = document.querySelector('.bottom-controls');
+        const rootEl = document.documentElement;
         const labelEl = document.getElementById('label');
         const runEl = document.getElementById('run');
         const productEl = document.getElementById('product');
@@ -2303,9 +2329,26 @@ html_template = """
             sliderEl.value = String(idx);
         }
 
+        function viewportHeight() {
+            if (window.visualViewport && Number.isFinite(window.visualViewport.height)) {
+                return Math.floor(window.visualViewport.height);
+            }
+            return Math.floor(window.innerHeight || document.documentElement.clientHeight || 800);
+        }
+
         function syncBottomInset() {
             const h = controlsEl ? Math.ceil(controlsEl.getBoundingClientRect().height) : 0;
+            rootEl.style.setProperty('--controls-h', String(Math.max(110, h)) + 'px');
             document.body.style.paddingBottom = String(h + 14) + 'px';
+            if (mapWrapEl) {
+                const isMobile = window.matchMedia('(max-width: 760px)').matches;
+                const mapTop = Math.max(0, Math.ceil(mapWrapEl.getBoundingClientRect().top));
+                const vh = Math.max(320, viewportHeight());
+                const edgeGap = isMobile ? 8 : 12;
+                const minMapHeight = isMobile ? 160 : 220;
+                const targetHeight = Math.max(minMapHeight, vh - h - mapTop - edgeGap);
+                mapWrapEl.style.height = String(targetHeight) + 'px';
+            }
         }
 
         function render() {
@@ -2372,6 +2415,9 @@ html_template = """
         }
         window.addEventListener('resize', syncBottomInset);
         window.addEventListener('orientationchange', syncBottomInset);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', syncBottomInset);
+        }
         syncRunScopedControls();
         syncBottomInset();
         render();
