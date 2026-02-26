@@ -5,6 +5,9 @@
     <title>WN2 Multi-Product Viewer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        :root {
+            --controls-h: 188px;
+        }
         body {
             background:#1f1f1f;
             color:#efefef;
@@ -13,9 +16,26 @@
             margin:0;
             padding-bottom:0;
         }
-        .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 18px; }
-        .map-wrap { background:#111; border:1px solid #4f4f4f; }
-        img { width:100%; height:auto; display:block; background:#111; }
+        .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 10px; }
+        .map-wrap {
+            background:#111;
+            border:1px solid #4f4f4f;
+            height:60vh;
+            min-height:220px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            overflow:hidden;
+        }
+        img {
+            width:auto;
+            height:auto;
+            max-width:100%;
+            max-height:100%;
+            object-fit:contain;
+            display:block;
+            background:#111;
+        }
         #title {
             margin:6px 0 10px;
             font-size:24px;
@@ -53,7 +73,7 @@
             bottom:0;
             background:#141414;
             border-top:1px solid #3c3c3c;
-            padding:10px 10px 12px;
+            padding:10px 10px calc(12px + env(safe-area-inset-bottom));
             box-shadow:0 -6px 16px rgba(0, 0, 0, 0.35);
         }
         .row {
@@ -78,6 +98,10 @@
             .bottom-controls { padding:10px 8px 12px; }
             .row { gap:8px; }
             #hourSlider { width:min(960px, 96vw); }
+            .map-wrap {
+                height:52vh;
+                min-height:160px;
+            }
         }
     </style>
 </head>
@@ -109,7 +133,7 @@
     </div>
 
     <script>
-        const manifest = {"generated_utc":"2026-02-26T19:04:12Z","history_hours":24,"default_run_id":"2026022612","snow_products":["conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"product_labels":{"nh_z500a":"NH 500mb Height Anomaly","na_z500a":"North America 500mb Height Anomaly","conus_mslp_ptype":"CONUS MSLP + P-Type","ne_mslp_ptype":"Northeast MSLP + P-Type","conus_vort500":"CONUS 500mb Vorticity","conus_snow_accum":"CONUS Snowfall Accumulation","ne_snow_accum":"Northeast Snowfall Accumulation","ne_zoom_snow_accum":"New England Zoom Snowfall Accumulation"},"runs":[{"id":"2026022612","label":"2026-02-26 12Z","run_date":"202602261200_202602261800_0","init_utc":"2026-02-26T12:00:00Z","hours":[6],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-26T19:04:12Z"},{"id":"2026022606","label":"2026-02-26 06Z","run_date":"202602260600_202602261200_0","init_utc":"2026-02-26T06:00:00Z","hours":[6],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-26T18:02:31Z"},{"id":"2026022518","label":"2026-02-25 18Z","run_date":"202602251800_202602260000_0","init_utc":"2026-02-25T18:00:00Z","hours":[6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120,126,132,138,144,150,156,162,168,174,180,186,192,198,204,210,216,222,228,234,240],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-26T09:02:17Z"},{"id":"2026022512","label":"2026-02-25 12Z","run_date":"202602251200_202602251800_0","init_utc":"2026-02-25T12:00:00Z","hours":[6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120,126,132,138,144,150,156,162,168,174,180,186,192,198,204,210,216,222,228,234,240],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-26T01:17:29Z"},{"id":"2026022506","label":"2026-02-25 06Z","run_date":"202602250600_202602251200_0","init_utc":"2026-02-25T06:00:00Z","hours":[6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120,126,132,138,144,150,156,162,168,174,180,186,192,198,204,210,216,222,228,234,240],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-25T21:33:53Z"}]};
+        const manifest = {"generated_utc":"2026-02-26T19:24:08Z","history_hours":24,"default_run_id":"2026022612","snow_products":["conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"product_labels":{"nh_z500a":"NH 500mb Height Anomaly","na_z500a":"North America 500mb Height Anomaly","conus_mslp_ptype":"CONUS MSLP + P-Type","ne_mslp_ptype":"Northeast MSLP + P-Type","conus_vort500":"CONUS 500mb Vorticity","conus_snow_accum":"CONUS Snowfall Accumulation","ne_snow_accum":"Northeast Snowfall Accumulation","ne_zoom_snow_accum":"New England Zoom Snowfall Accumulation"},"runs":[{"id":"2026022612","label":"2026-02-26 12Z","run_date":"202602261200_202602261800_0","init_utc":"2026-02-26T12:00:00Z","hours":[6],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-26T19:24:08Z"},{"id":"2026022606","label":"2026-02-26 06Z","run_date":"202602260600_202602261200_0","init_utc":"2026-02-26T06:00:00Z","hours":[6],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-26T18:02:31Z"},{"id":"2026022518","label":"2026-02-25 18Z","run_date":"202602251800_202602260000_0","init_utc":"2026-02-25T18:00:00Z","hours":[6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120,126,132,138,144,150,156,162,168,174,180,186,192,198,204,210,216,222,228,234,240],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-26T09:02:17Z"},{"id":"2026022512","label":"2026-02-25 12Z","run_date":"202602251200_202602251800_0","init_utc":"2026-02-25T12:00:00Z","hours":[6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120,126,132,138,144,150,156,162,168,174,180,186,192,198,204,210,216,222,228,234,240],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-26T01:17:29Z"},{"id":"2026022506","label":"2026-02-25 06Z","run_date":"202602250600_202602251200_0","init_utc":"2026-02-25T06:00:00Z","hours":[6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120,126,132,138,144,150,156,162,168,174,180,186,192,198,204,210,216,222,228,234,240],"products":["nh_z500a","na_z500a","conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"updated_utc":"2026-02-25T21:33:53Z"}]};
         const runs = Array.isArray(manifest.runs) ? manifest.runs : [];
         const snowProducts = new Set(Array.isArray(manifest.snow_products) ? manifest.snow_products : []);
         const productLabels = (manifest.product_labels && typeof manifest.product_labels === 'object') ? manifest.product_labels : {};
@@ -118,7 +142,9 @@
 
         const mapEl = document.getElementById('map');
         const titleEl = document.getElementById('title');
+        const mapWrapEl = document.querySelector('.map-wrap');
         const controlsEl = document.querySelector('.bottom-controls');
+        const rootEl = document.documentElement;
         const labelEl = document.getElementById('label');
         const runEl = document.getElementById('run');
         const productEl = document.getElementById('product');
@@ -206,9 +232,26 @@
             sliderEl.value = String(idx);
         }
 
+        function viewportHeight() {
+            if (window.visualViewport && Number.isFinite(window.visualViewport.height)) {
+                return Math.floor(window.visualViewport.height);
+            }
+            return Math.floor(window.innerHeight || document.documentElement.clientHeight || 800);
+        }
+
         function syncBottomInset() {
             const h = controlsEl ? Math.ceil(controlsEl.getBoundingClientRect().height) : 0;
+            rootEl.style.setProperty('--controls-h', String(Math.max(110, h)) + 'px');
             document.body.style.paddingBottom = String(h + 14) + 'px';
+            if (mapWrapEl) {
+                const isMobile = window.matchMedia('(max-width: 760px)').matches;
+                const mapTop = Math.max(0, Math.ceil(mapWrapEl.getBoundingClientRect().top));
+                const vh = Math.max(320, viewportHeight());
+                const edgeGap = isMobile ? 8 : 12;
+                const minMapHeight = isMobile ? 160 : 220;
+                const targetHeight = Math.max(minMapHeight, vh - h - mapTop - edgeGap);
+                mapWrapEl.style.height = String(targetHeight) + 'px';
+            }
         }
 
         function render() {
@@ -275,6 +318,9 @@
         }
         window.addEventListener('resize', syncBottomInset);
         window.addEventListener('orientationchange', syncBottomInset);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', syncBottomInset);
+        }
         syncRunScopedControls();
         syncBottomInset();
         render();
