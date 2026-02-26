@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-02-26T19:24:08Z",
+  "generated_utc": "2026-02-26T19:55:14Z",
   "history_hours": 24,
   "default_run_id": "2026022612",
   "snow_products": [
@@ -24,7 +24,7 @@
       "run_date": "202602261200_202602261800_0",
       "init_utc": "2026-02-26T12:00:00Z",
       "hours": [
-        6
+        240
       ],
       "products": [
         "nh_z500a",
@@ -39,10 +39,9 @@
       "snow_ratios": [
         10,
         12,
-        15,
-        20
+        15
       ],
-      "updated_utc": "2026-02-26T19:24:08Z"
+      "updated_utc": "2026-02-26T19:55:14Z"
     },
     {
       "id": "2026022606",
