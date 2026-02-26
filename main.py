@@ -271,8 +271,8 @@ ANOMALY_NEG_PALETTE = ['#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#
 ANOMALY_POS_PALETTE = ['#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16']
 ANOMALY_MIN_M = -300
 ANOMALY_MAX_M = 300
-ANOMALY_NEUTRAL_M = 4
-ANOMALY_DISPLAY_GAIN = 1.30
+ANOMALY_NEUTRAL_M = 8
+ANOMALY_DISPLAY_GAIN = 1.15
 ANOMALY_SMOOTH_RADIUS_PX = 2
 BASEMAP_LAND_COLOR = '#dbe1e7'
 BASEMAP_OCEAN_COLOR = '#c9d6e2'
@@ -1319,25 +1319,27 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
             t = r * tan_edge
             lat = math.degrees((math.pi / 2.0) - (2.0 * math.atan(t)))
             lat = max(lat_min, min(lat_max, lat))
-            lon = lon0 - math.degrees(math.atan2(dx, -dy))
+            if r < 1e-9:
+                lon = lon0
+            else:
+                lon = lon0 - math.degrees(math.atan2(dx, -dy))
             lon = ((lon + 180.0) % 360.0) - 180.0
 
-            sx_f = (lon + 180.0) / 360.0 * (sw - 1)
+            # Wrap longitudes across the antimeridian to avoid a seam in polar remap.
+            sx_f = ((lon + 180.0) / 360.0) * sw
+            sx_f = sx_f % sw
             sy_f = (lat_max - lat) / (lat_max - lat_min) * (sh - 1)
-            if sx_f < 0.0:
-                sx_f = 0.0
-            elif sx_f > (sw - 1):
-                sx_f = float(sw - 1)
             if sy_f < 0.0:
                 sy_f = 0.0
             elif sy_f > (sh - 1):
                 sy_f = float(sh - 1)
 
-            x0 = int(math.floor(sx_f))
+            x0_raw = int(math.floor(sx_f))
+            x0 = x0_raw % sw
             y0 = int(math.floor(sy_f))
-            x1 = min(sw - 1, x0 + 1)
+            x1 = (x0 + 1) % sw
             y1 = min(sh - 1, y0 + 1)
-            wx = sx_f - x0
+            wx = sx_f - x0_raw
             wy = sy_f - y0
 
             c00 = src_px[x0, y0]
@@ -1512,22 +1514,44 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         )
         annotate_map_file(out_file, prefix, h)
 
-    true_anomaly = z500_anomaly_m(img, h, region_geom=region_geom, cache_tag=prefix)
-    try:
-        _export_and_annotate(
-            _build_composite(true_anomaly, allow_nh_contours=(prefix == 'nh_z500a')),
-            use_scale=(prefix != 'nh_z500a'),
+    def _is_recoverable_export_error(msg):
+        return (
+            'User memory limit exceeded' in msg
+            or 'Unable to transform edge' in msg
+            or 'Invalid argument' in msg
         )
+
+    true_anomaly = z500_anomaly_m(img, h, region_geom=region_geom, cache_tag=prefix)
+    if prefix == 'nh_z500a':
+        try:
+            _export_and_annotate(_build_composite(true_anomaly, allow_nh_contours=True), use_scale=False)
+            return
+        except Exception as e:
+            msg = str(e)
+            if not _is_recoverable_export_error(msg):
+                raise
+            print(f'[{ts()}] {prefix} hour {h}: NH contour pass failed, retrying true anomaly without contours.')
+        try:
+            _export_and_annotate(_build_composite(true_anomaly, allow_nh_contours=False), use_scale=False)
+            return
+        except Exception as e:
+            msg = str(e)
+            if not _is_recoverable_export_error(msg):
+                raise
+            print(f'[{ts()}] {prefix} hour {h}: true anomaly export failed, falling back to pseudo anomaly.')
+        radius = 26
+        pseudo_anomaly = pseudo_z500_anomaly_m(forecast_height_dam, radius_px=radius)
+        _export_and_annotate(_build_composite(pseudo_anomaly, allow_nh_contours=False), use_scale=False)
+        return
+
+    try:
+        _export_and_annotate(_build_composite(true_anomaly, allow_nh_contours=False), use_scale=True)
     except Exception as e:
         msg = str(e)
-        if (
-            'User memory limit exceeded' not in msg
-            and 'Unable to transform edge' not in msg
-            and 'Invalid argument' not in msg
-        ):
+        if not _is_recoverable_export_error(msg):
             raise
         print(f'[{ts()}] {prefix} hour {h}: falling back to pseudo anomaly after EE export failure.')
-        radius = 26 if prefix == 'nh_z500a' else 20
+        radius = 20
         pseudo_anomaly = pseudo_z500_anomaly_m(forecast_height_dam, radius_px=radius)
         _export_and_annotate(_build_composite(pseudo_anomaly, allow_nh_contours=False), use_scale=False)
 
