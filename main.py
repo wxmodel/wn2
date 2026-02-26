@@ -267,8 +267,13 @@ ANOMALY_PALETTE = [
     '#f7f7f7',
     '#ffe08a', '#ffad5a', '#ff6b3a', '#d7301f', '#7f0000'
 ]
+ANOMALY_NEG_PALETTE = ['#6a00a8', '#9c4dcc', '#5e60ce', '#2f80ed', '#7dcfff']
+ANOMALY_POS_PALETTE = ['#ffe08a', '#ffad5a', '#ff6b3a', '#d7301f', '#7f0000']
 ANOMALY_MIN_M = -300
 ANOMALY_MAX_M = 300
+ANOMALY_NEUTRAL_M = 12
+BASEMAP_LAND_COLOR = '#ece9df'
+BASEMAP_OCEAN_COLOR = '#d9e5ee'
 VORTICITY_PALETTE = ['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f']
 RAIN_RATE_PALETTE = ['#a9ee80', '#7ad35a', '#4eb744', '#2f9637', '#f7ea00', '#ffbf00', '#ff8a00', '#ff4200', '#b70000', '#c21cff']
 SNOW_RATE_PALETTE = ['#0a1f6f', '#0d2f8f', '#1448b1', '#1f66cc', '#2d84df', '#45a6ef', '#63c2ff']
@@ -725,6 +730,21 @@ def basemap_overlay(region_geom, land_color='#ececec', ocean_color='#cfe0ea', la
     return ee.ImageCollection([ocean, land]).mosaic()
 
 
+def anomaly_overlay(anomaly_field):
+    # Keep small anomalies transparent so the basemap color is consistent and cleaner.
+    neg = anomaly_field.updateMask(anomaly_field.lte(-ANOMALY_NEUTRAL_M)).visualize(
+        min=ANOMALY_MIN_M,
+        max=-ANOMALY_NEUTRAL_M,
+        palette=ANOMALY_NEG_PALETTE,
+    )
+    pos = anomaly_field.updateMask(anomaly_field.gte(ANOMALY_NEUTRAL_M)).visualize(
+        min=ANOMALY_NEUTRAL_M,
+        max=ANOMALY_MAX_M,
+        palette=ANOMALY_POS_PALETTE,
+    )
+    return ee.ImageCollection([neg, pos]).mosaic()
+
+
 def pseudo_z500_anomaly_m(height_dam, radius_px=20):
     broad = height_dam.resample('bilinear').focalMean(radius=radius_px, kernelType='circle', units='pixels')
     return height_dam.subtract(broad).multiply(10).rename('z500_pseudo_anomaly_m')
@@ -825,6 +845,31 @@ def inset_region_bbox(region, lon_pad=0.6, lat_pad=0.6):
         min(179.9, east - lon_pad),
         min(89.9, north - lat_pad),
     ]
+
+
+def region_dimensions(base_dims, region):
+    if not isinstance(region, list) or len(region) != 4:
+        return base_dims
+    width = None
+    if isinstance(base_dims, int):
+        width = base_dims
+    elif isinstance(base_dims, str) and 'x' in base_dims:
+        try:
+            width = int(base_dims.lower().split('x', 1)[0])
+        except ValueError:
+            width = None
+    if width is None or width < 200:
+        return base_dims
+
+    west, south, east, north = [float(v) for v in region]
+    lon_span = (east - west) if east >= west else (east + 360.0 - west)
+    lat_span = max(0.2, north - south)
+    mid_lat = max(-80.0, min(80.0, (south + north) * 0.5))
+    x_span = max(0.2, lon_span * max(0.2, math.cos(math.radians(mid_lat))))
+    aspect = max(0.7, min(3.8, x_span / lat_span))
+    height = int(round(width / aspect))
+    height = max(360, min(2200, height))
+    return f'{width}x{height}'
 
 
 def load_font(size, bold=False):
@@ -1238,6 +1283,9 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
     cx = (out_size - 1) / 2.0
     cy = (out_size - 1) / 2.0
     radius = out_size * 0.48
+    tan_edge = math.tan((math.pi / 4.0) - (math.radians(lat_min) / 2.0))
+    if tan_edge <= 0:
+        tan_edge = 1e-6
 
     for y in range(out_size):
         dy = (y - cy) / radius
@@ -1247,7 +1295,9 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
             if r > 1.0:
                 continue
 
-            lat = 90.0 - r * (90.0 - lat_min)
+            t = r * tan_edge
+            lat = math.degrees((math.pi / 2.0) - (2.0 * math.atan(t)))
+            lat = max(lat_min, min(lat_max, lat))
             lon = lon0 - math.degrees(math.atan2(dx, -dy))
             lon = ((lon + 180.0) % 360.0) - 180.0
 
@@ -1369,21 +1419,17 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         region_geom = ee.Geometry.Rectangle(region, geodesic=False)
         export_region = region
         export_crs = None
-        map_dims = ANOMALY_DIMS
+        map_dims = region_dimensions(ANOMALY_DIMS, region)
 
     forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
 
     def _build_composite(anomaly_field):
-        anomaly_layer = anomaly_field.visualize(
-            min=ANOMALY_MIN_M,
-            max=ANOMALY_MAX_M,
-            palette=ANOMALY_PALETTE,
-        )
+        anomaly_layer = anomaly_overlay(anomaly_field)
         if prefix == 'nh_z500a':
             # NH contour generation can produce invalid transform edges in EE thumbnails.
             # Keep anomaly + basemap + country borders for stable renders.
             overlays = [
-                basemap_overlay(WORLD_REGION, land_color='#d8d8d8', ocean_color='#d9e5ee'),
+                basemap_overlay(WORLD_REGION, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
                 anomaly_layer,
                 border_overlay(include_states=False),
             ]
@@ -1396,7 +1442,7 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 opacity=0.84,
             )
             overlays = [
-                basemap_overlay(region_geom, land_color='#d8d8d8', ocean_color='#d9e5ee'),
+                basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
                 anomaly_layer,
                 z500_contours,
                 border_overlay(include_states=False).clip(region_geom),
@@ -1672,7 +1718,7 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
     low_center = find_low_center(mslp_hpa, work_geom, fallback_region=region)
 
     composite = ee.ImageCollection([
-        basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6', land_fc=land_fc),
+        basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR, land_fc=land_fc),
         rain_layer,
         snow_layer,
         frz_layer,
@@ -1682,7 +1728,8 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
     ]).mosaic()
 
     out_file = build_frame_path(key, h)
-    dims = PTYPE_NE_DIMS if key.startswith('ne_') else PTYPE_CONUS_DIMS
+    base_dims = PTYPE_NE_DIMS if key.startswith('ne_') else PTYPE_CONUS_DIMS
+    dims = region_dimensions(base_dims, region)
     export_composite(composite, out_file, region, dimensions=dims)
     annotate_map_file(out_file, key, h, map_region=region, low_center=low_center)
 
@@ -1700,13 +1747,14 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
     snow_labels = get_snow_airport_labels(snow_total_in, key)
 
     composite = ee.ImageCollection([
-        basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6', land_fc=land_fc),
+        basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR, land_fc=land_fc),
         snow_layer,
         border_overlay(include_states=True, state_names=state_names),
     ]).mosaic()
 
     out_file = build_frame_path(key, h, snow_ratio=snow_ratio)
-    dims = SNOW_NE_DIMS if key.startswith('ne_') else SNOW_CONUS_DIMS
+    base_dims = SNOW_NE_DIMS if key.startswith('ne_') else SNOW_CONUS_DIMS
+    dims = region_dimensions(base_dims, region)
     export_composite(composite, out_file, region, dimensions=dims)
     annotate_map_file(out_file, key, h, map_region=region, snow_labels=snow_labels, snow_ratio=snow_ratio)
 
@@ -1739,14 +1787,15 @@ def generate_vort500_map(img, h):
         opacity=0.88,
     )
     composite = ee.ImageCollection([
-        basemap_overlay(region_geom, land_color='#eeeeee', ocean_color='#c7dbe6'),
+        basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
         vort_layer,
         z500_contours,
         border_overlay(include_states=True),
     ]).mosaic()
 
     out_file = build_frame_path('conus_vort500', h)
-    export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=CONUS_DIMS)
+    dims = region_dimensions(CONUS_DIMS, CONUS_THUMB_REGION)
+    export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=dims)
     annotate_map_file(out_file, 'conus_vort500', h)
 
 
