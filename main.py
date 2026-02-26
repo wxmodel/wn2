@@ -228,18 +228,18 @@ def _select_product_flag(raw, default=True):
 
 FAST_RENDER = _env_flag(fast_render_env, default=(event_name == 'schedule'))
 if FAST_RENDER:
-    ANOMALY_DIMS = '980x720'
-    CONUS_DIMS = '1200x860'
-    NE_DIMS = '1100x900'
+    ANOMALY_DIMS = '1080x790'
+    CONUS_DIMS = '1300x930'
+    NE_DIMS = '1180x930'
     PTYPE_CONUS_DIMS = '1320x960'
     PTYPE_NE_DIMS = '1200x980'
     SNOW_CONUS_DIMS = '1320x960'
     SNOW_NE_DIMS = '1200x980'
-    NH_SOURCE_DIMS = '1800x360'
-    NH_POLAR_DIMS = 920
-    ANOMALY_NA_SCALE_M = 40000
-    ANOMALY_NH_SCALE_M = 55000
-    ANOMALY_WORK_SCALE_M = 180000
+    NH_SOURCE_DIMS = '2000x400'
+    NH_POLAR_DIMS = 980
+    ANOMALY_NA_SCALE_M = 36000
+    ANOMALY_NH_SCALE_M = 50000
+    ANOMALY_WORK_SCALE_M = 130000
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -263,17 +263,19 @@ EXPORT_WORKERS = max(1, min(4, EXPORT_WORKERS))
 print(f'[{ts()}] Render profile: fast={FAST_RENDER}, workers={EXPORT_WORKERS}, dims={ANOMALY_DIMS}/{CONUS_DIMS}.')
 
 ANOMALY_PALETTE = [
-    '#6a00a8', '#9c4dcc', '#5e60ce', '#2f80ed', '#7dcfff',
-    '#f7f7f7',
-    '#ffe08a', '#ffad5a', '#ff6b3a', '#d7301f', '#7f0000'
+    '#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#9fd7f5',
+    '#e8e8dd',
+    '#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16'
 ]
-ANOMALY_NEG_PALETTE = ['#6a00a8', '#9c4dcc', '#5e60ce', '#2f80ed', '#7dcfff']
-ANOMALY_POS_PALETTE = ['#ffe08a', '#ffad5a', '#ff6b3a', '#d7301f', '#7f0000']
+ANOMALY_NEG_PALETTE = ['#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#9fd7f5']
+ANOMALY_POS_PALETTE = ['#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16']
 ANOMALY_MIN_M = -300
 ANOMALY_MAX_M = 300
-ANOMALY_NEUTRAL_M = 12
-BASEMAP_LAND_COLOR = '#ece9df'
-BASEMAP_OCEAN_COLOR = '#d9e5ee'
+ANOMALY_NEUTRAL_M = 4
+ANOMALY_DISPLAY_GAIN = 1.30
+ANOMALY_SMOOTH_RADIUS_PX = 2
+BASEMAP_LAND_COLOR = '#dbe1e7'
+BASEMAP_OCEAN_COLOR = '#c9d6e2'
 VORTICITY_PALETTE = ['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f']
 RAIN_RATE_PALETTE = ['#a9ee80', '#7ad35a', '#4eb744', '#2f9637', '#f7ea00', '#ffbf00', '#ff8a00', '#ff4200', '#b70000', '#c21cff']
 SNOW_RATE_PALETTE = ['#0a1f6f', '#0d2f8f', '#1448b1', '#1f66cc', '#2d84df', '#45a6ef', '#63c2ff']
@@ -705,12 +707,24 @@ def get_hour_image(h):
 
 
 # --- 3. METEOROLOGY LOGIC ---
-def contour_overlay(field, interval, color, opacity=0.82):
-    # Draw smooth-ish contour lines by finding quantization edges.
-    smoothed = field.resample('bilinear').focalMean(1, 'circle', 'pixels')
+def contour_overlay(field, interval, color, opacity=0.82, smooth_px=1, thicken_px=0):
+    # Draw contour lines by detecting quantization edges.
+    smoothed = field.resample('bilinear')
+    if smooth_px and smooth_px > 0:
+        smoothed = smoothed.focalMean(int(smooth_px), 'circle', 'pixels')
     quantized = smoothed.divide(interval).round()
-    edges = quantized.focalMax(1).neq(quantized.focalMin(1)).focalMax(1).selfMask()
-    return edges.visualize(palette=[color], opacity=opacity)
+    edges = quantized.focalMax(1).neq(quantized.focalMin(1))
+    if thicken_px and thicken_px > 0:
+        edges = edges.focalMax(int(thicken_px))
+    return edges.selfMask().visualize(palette=[color], opacity=opacity)
+
+
+def highlight_iso_overlay(field, level, color='#2455ff', opacity=0.92, tolerance=1.2, smooth_px=1):
+    smoothed = field.resample('bilinear')
+    if smooth_px and smooth_px > 0:
+        smoothed = smoothed.focalMean(int(smooth_px), 'circle', 'pixels')
+    line = smoothed.subtract(float(level)).abs().lte(float(tolerance)).focalMax(1).selfMask()
+    return line.visualize(palette=[color], opacity=opacity)
 
 
 def border_overlay(include_states=False, state_names=None):
@@ -731,13 +745,20 @@ def basemap_overlay(region_geom, land_color='#ececec', ocean_color='#cfe0ea', la
 
 
 def anomaly_overlay(anomaly_field):
-    # Keep small anomalies transparent so the basemap color is consistent and cleaner.
-    neg = anomaly_field.updateMask(anomaly_field.lte(-ANOMALY_NEUTRAL_M)).visualize(
+    # Apply mild smoothing + gain for a cleaner, less noisy anomaly presentation.
+    anomaly_vis = anomaly_field.resample('bilinear')
+    if ANOMALY_SMOOTH_RADIUS_PX > 0:
+        anomaly_vis = anomaly_vis.focalMean(ANOMALY_SMOOTH_RADIUS_PX, 'circle', 'pixels')
+    if abs(ANOMALY_DISPLAY_GAIN - 1.0) > 1e-6:
+        anomaly_vis = anomaly_vis.multiply(ANOMALY_DISPLAY_GAIN)
+    anomaly_vis = anomaly_vis.clamp(ANOMALY_MIN_M, ANOMALY_MAX_M)
+
+    neg = anomaly_vis.updateMask(anomaly_vis.lte(-ANOMALY_NEUTRAL_M)).visualize(
         min=ANOMALY_MIN_M,
         max=-ANOMALY_NEUTRAL_M,
         palette=ANOMALY_NEG_PALETTE,
     )
-    pos = anomaly_field.updateMask(anomaly_field.gte(ANOMALY_NEUTRAL_M)).visualize(
+    pos = anomaly_vis.updateMask(anomaly_vis.gte(ANOMALY_NEUTRAL_M)).visualize(
         min=ANOMALY_NEUTRAL_M,
         max=ANOMALY_MAX_M,
         palette=ANOMALY_POS_PALETTE,
@@ -1423,28 +1444,49 @@ def generate_z500_anomaly_map(img, h, region, prefix):
 
     forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
 
-    def _build_composite(anomaly_field):
+    def _build_composite(anomaly_field, allow_nh_contours=True):
         anomaly_layer = anomaly_overlay(anomaly_field)
         if prefix == 'nh_z500a':
-            # NH contour generation can produce invalid transform edges in EE thumbnails.
-            # Keep anomaly + basemap + country borders for stable renders.
             overlays = [
                 basemap_overlay(WORLD_REGION, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
                 anomaly_layer,
-                border_overlay(include_states=False),
             ]
+            if allow_nh_contours:
+                nh_contours = contour_overlay(
+                    forecast_height_dam,
+                    interval=6,
+                    color='#181818',
+                    opacity=0.74,
+                    smooth_px=1,
+                    thicken_px=0,
+                )
+                overlays.append(nh_contours)
+            overlays.extend([
+                border_overlay(include_states=False),
+            ])
             return ee.ImageCollection(overlays).mosaic()
         else:
             z500_contours = contour_overlay(
                 forecast_height_dam.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M),
                 interval=6,
-                color='#1f1f1f',
-                opacity=0.84,
+                color='#1a1a1a',
+                opacity=0.78,
+                smooth_px=1,
+                thicken_px=0,
+            )
+            z540_contour = highlight_iso_overlay(
+                forecast_height_dam,
+                level=540,
+                color='#2455ff',
+                opacity=0.90,
+                tolerance=1.0,
+                smooth_px=1,
             )
             overlays = [
                 basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
                 anomaly_layer,
                 z500_contours,
+                z540_contour,
                 border_overlay(include_states=False).clip(region_geom),
             ]
         return ee.ImageCollection(overlays).mosaic()
@@ -1472,7 +1514,10 @@ def generate_z500_anomaly_map(img, h, region, prefix):
 
     true_anomaly = z500_anomaly_m(img, h, region_geom=region_geom, cache_tag=prefix)
     try:
-        _export_and_annotate(_build_composite(true_anomaly), use_scale=(prefix != 'nh_z500a'))
+        _export_and_annotate(
+            _build_composite(true_anomaly, allow_nh_contours=(prefix == 'nh_z500a')),
+            use_scale=(prefix != 'nh_z500a'),
+        )
     except Exception as e:
         msg = str(e)
         if (
@@ -1484,7 +1529,7 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         print(f'[{ts()}] {prefix} hour {h}: falling back to pseudo anomaly after EE export failure.')
         radius = 26 if prefix == 'nh_z500a' else 20
         pseudo_anomaly = pseudo_z500_anomaly_m(forecast_height_dam, radius_px=radius)
-        _export_and_annotate(_build_composite(pseudo_anomaly), use_scale=False)
+        _export_and_annotate(_build_composite(pseudo_anomaly, allow_nh_contours=False), use_scale=False)
 
 
 def derive_precip_phase(img, region_geom):
