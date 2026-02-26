@@ -2108,11 +2108,17 @@ html_template = """
             font-family:system-ui, sans-serif;
             text-align:center;
             margin:0;
-            padding-bottom:168px;
+            padding-bottom:0;
         }
         .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 18px; }
         .map-wrap { background:#111; border:1px solid #4f4f4f; }
         img { width:100%; height:auto; display:block; background:#111; }
+        #title {
+            margin:6px 0 10px;
+            font-size:24px;
+            font-weight:700;
+            letter-spacing:0.01em;
+        }
         button {
             padding:10px 16px;
             font-size:16px;
@@ -2130,17 +2136,6 @@ html_template = """
             background:#2a2a2a;
             color:#f1f1f1;
             min-width:120px;
-        }
-        .meta {
-            margin:4px 0 10px;
-            font-size:14px;
-            color:#cecece;
-        }
-        #status {
-            min-height:20px;
-            margin-bottom:10px;
-            color:#ffc9b3;
-            font-size:14px;
         }
         #label {
             display:inline-block;
@@ -2173,19 +2168,19 @@ html_template = """
             touch-action:pan-x;
         }
         @media (max-width: 760px) {
-            h2 { font-size:20px; margin:10px 0; }
+            #title { font-size:20px; margin:8px 0 10px; }
             button { font-size:14px; padding:8px 12px; }
             select { font-size:14px; min-width:96px; }
             #label { min-width:86px; }
-            body { padding-bottom:210px; }
+            .bottom-controls { padding:10px 8px 12px; }
+            .row { gap:8px; }
+            #hourSlider { width:min(960px, 96vw); }
         }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <h2 id="title">WeatherNext 2 Map Viewer</h2>
-        <div id="meta" class="meta"></div>
-        <div id="status"></div>
+        <h2 id="title">WeatherNext2 viewer</h2>
         <div class="map-wrap">
             <img id="map" src="" alt="WN2 map">
         </div>
@@ -2220,8 +2215,7 @@ html_template = """
 
         const mapEl = document.getElementById('map');
         const titleEl = document.getElementById('title');
-        const metaEl = document.getElementById('meta');
-        const statusEl = document.getElementById('status');
+        const controlsEl = document.querySelector('.bottom-controls');
         const labelEl = document.getElementById('label');
         const runEl = document.getElementById('run');
         const productEl = document.getElementById('product');
@@ -2309,14 +2303,18 @@ html_template = """
             sliderEl.value = String(idx);
         }
 
+        function syncBottomInset() {
+            const h = controlsEl ? Math.ceil(controlsEl.getBoundingClientRect().height) : 0;
+            document.body.style.paddingBottom = String(h + 14) + 'px';
+        }
+
         function render() {
             const run = getCurrentRun();
             if (!run || !activeHours.length || !productEl.value) {
                 mapEl.src = '';
                 labelEl.innerText = 'No hours';
-                titleEl.innerText = 'WeatherNext 2 Map Viewer';
-                metaEl.innerText = '';
-                statusEl.innerText = runs.length ? 'No frames available for this run.' : 'No runs available.';
+                titleEl.innerText = 'WeatherNext2 viewer';
+                syncBottomInset();
                 return;
             }
 
@@ -2333,16 +2331,13 @@ html_template = """
             const ratio = Number(ratioEl.value || 10);
             const frameName = buildFrameName(product, hour, ratio);
             const runId = String(run.id);
-            const runLabel = run.label || runId;
-            const initUtc = run.init_utc || 'unknown';
             const hourStr = String(hour).padStart(3, '0');
 
             mapEl.src = 'runs/' + runId + '/' + frameName;
             mapEl.alt = runId + ' ' + product + ' hour ' + hourStr;
             labelEl.innerText = 'Hour ' + hourStr;
-            titleEl.innerText = 'WeatherNext 2 Map Viewer: ' + (run.run_date || runLabel);
-            metaEl.innerText = 'Run ' + runLabel + ' | Init ' + initUtc + (isSnow ? ' | Ratio ' + ratio + ':1' : '');
-            statusEl.innerText = '';
+            titleEl.innerText = 'WeatherNext2 viewer';
+            syncBottomInset();
         }
 
         function change(dir) {
@@ -2351,13 +2346,6 @@ html_template = """
             sliderEl.value = String(idx);
             render();
         }
-
-        mapEl.addEventListener('error', () => {
-            statusEl.innerText = 'Selected frame is missing for this run/product/hour/ratio.';
-        });
-        mapEl.addEventListener('load', () => {
-            statusEl.innerText = '';
-        });
 
         runEl.addEventListener('change', () => {
             syncRunScopedControls();
@@ -2382,7 +2370,10 @@ html_template = """
                 : String(runs[0].id);
             runEl.value = defaultId;
         }
+        window.addEventListener('resize', syncBottomInset);
+        window.addEventListener('orientationchange', syncBottomInset);
         syncRunScopedControls();
+        syncBottomInset();
         render();
     </script>
 </body>
