@@ -272,8 +272,8 @@ ANOMALY_POS_PALETTE = ['#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#
 ANOMALY_MIN_M = -300
 ANOMALY_MAX_M = 300
 ANOMALY_NEUTRAL_M = 8
-ANOMALY_DISPLAY_GAIN = 1.15
-ANOMALY_SMOOTH_RADIUS_PX = 2
+ANOMALY_DISPLAY_GAIN = 1.05
+ANOMALY_SMOOTH_RADIUS_PX = 1
 BASEMAP_LAND_COLOR = '#dbe1e7'
 BASEMAP_OCEAN_COLOR = '#c9d6e2'
 VORTICITY_PALETTE = ['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f']
@@ -752,18 +752,11 @@ def anomaly_overlay(anomaly_field):
     if abs(ANOMALY_DISPLAY_GAIN - 1.0) > 1e-6:
         anomaly_vis = anomaly_vis.multiply(ANOMALY_DISPLAY_GAIN)
     anomaly_vis = anomaly_vis.clamp(ANOMALY_MIN_M, ANOMALY_MAX_M)
-
-    neg = anomaly_vis.updateMask(anomaly_vis.lte(-ANOMALY_NEUTRAL_M)).visualize(
+    return anomaly_vis.visualize(
         min=ANOMALY_MIN_M,
-        max=-ANOMALY_NEUTRAL_M,
-        palette=ANOMALY_NEG_PALETTE,
-    )
-    pos = anomaly_vis.updateMask(anomaly_vis.gte(ANOMALY_NEUTRAL_M)).visualize(
-        min=ANOMALY_NEUTRAL_M,
         max=ANOMALY_MAX_M,
-        palette=ANOMALY_POS_PALETTE,
+        palette=ANOMALY_PALETTE,
     )
-    return ee.ImageCollection([neg, pos]).mosaic()
 
 
 def pseudo_z500_anomaly_m(height_dam, radius_px=20):
@@ -1289,7 +1282,7 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
         canvas.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 
-def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
+def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=88.5):
     from PIL import Image, ImageDraw
 
     with Image.open(out_file) as src:
@@ -1437,7 +1430,10 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
 
 def generate_z500_anomaly_map(img, h, region, prefix):
     if prefix == 'nh_z500a':
-        region_geom = NH_REGION
+        region_geom = ee.Geometry.Rectangle(NH_SOURCE_REGION, geodesic=False)
+        export_region = NH_SOURCE_REGION
+        export_crs = TARGET_CRS
+        map_dims = NH_SOURCE_DIMS
     else:
         region_geom = ee.Geometry.Rectangle(region, geodesic=False)
         export_region = region
@@ -1445,61 +1441,54 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         map_dims = region_dimensions(ANOMALY_DIMS, region)
 
     forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
+    contour_field = forecast_height_dam.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
 
-    def _build_composite(anomaly_field, allow_nh_contours=True):
+    def _build_composite(anomaly_field, contour_interval=6):
         anomaly_layer = anomaly_overlay(anomaly_field)
-        if prefix == 'nh_z500a':
-            overlays = [
-                basemap_overlay(WORLD_REGION, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
-                anomaly_layer,
-            ]
-            if allow_nh_contours:
-                nh_contours = contour_overlay(
-                    forecast_height_dam,
-                    interval=6,
-                    color='#181818',
-                    opacity=0.74,
-                    smooth_px=1,
-                    thicken_px=0,
-                )
-                overlays.append(nh_contours)
-            overlays.extend([
-                border_overlay(include_states=False),
-            ])
-            return ee.ImageCollection(overlays).mosaic()
-        else:
-            z500_contours = contour_overlay(
-                forecast_height_dam.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M),
-                interval=6,
-                color='#1a1a1a',
-                opacity=0.78,
-                smooth_px=1,
-                thicken_px=0,
-            )
-            z540_contour = highlight_iso_overlay(
-                forecast_height_dam,
-                level=540,
-                color='#2455ff',
-                opacity=0.90,
-                tolerance=1.0,
-                smooth_px=1,
-            )
-            overlays = [
-                basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
-                anomaly_layer,
-                z500_contours,
-                z540_contour,
-                border_overlay(include_states=False).clip(region_geom),
-            ]
+        z500_contours = contour_overlay(
+            contour_field,
+            interval=contour_interval,
+            color='#151515',
+            opacity=0.88,
+            smooth_px=0,
+            thicken_px=1,
+        )
+        z540_contour = highlight_iso_overlay(
+            contour_field,
+            level=540,
+            color='#2455ff',
+            opacity=0.92,
+            tolerance=1.0,
+            smooth_px=0,
+        )
+        overlays = [
+            basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
+            anomaly_layer,
+            z500_contours,
+            z540_contour,
+            border_overlay(include_states=False).clip(region_geom),
+        ]
         return ee.ImageCollection(overlays).mosaic()
 
     def _export_and_annotate(composite_image, use_scale=True):
         out_file = build_frame_path(prefix, h)
         if prefix == 'nh_z500a':
             if use_scale:
-                export_composite(composite_image, out_file, NH_SOURCE_REGION, scale=ANOMALY_NH_SCALE_M, crs=TARGET_CRS)
+                export_composite(
+                    composite_image,
+                    out_file,
+                    export_region,
+                    scale=ANOMALY_NH_SCALE_M,
+                    crs=export_crs,
+                )
             else:
-                export_composite(composite_image, out_file, NH_SOURCE_REGION, dimensions=NH_SOURCE_DIMS)
+                export_composite(
+                    composite_image,
+                    out_file,
+                    export_region,
+                    dimensions=map_dims,
+                    crs=export_crs,
+                )
             remap_nh_to_polar(out_file, lon0=NH_LON0)
             annotate_map_file(out_file, prefix, h)
             return
@@ -1523,37 +1512,37 @@ def generate_z500_anomaly_map(img, h, region, prefix):
 
     true_anomaly = z500_anomaly_m(img, h, region_geom=region_geom, cache_tag=prefix)
     if prefix == 'nh_z500a':
-        try:
-            _export_and_annotate(_build_composite(true_anomaly, allow_nh_contours=True), use_scale=False)
-            return
-        except Exception as e:
-            msg = str(e)
-            if not _is_recoverable_export_error(msg):
-                raise
-            print(f'[{ts()}] {prefix} hour {h}: NH contour pass failed, retrying true anomaly without contours.')
-        try:
-            _export_and_annotate(_build_composite(true_anomaly, allow_nh_contours=False), use_scale=False)
-            return
-        except Exception as e:
-            msg = str(e)
-            if not _is_recoverable_export_error(msg):
-                raise
-            print(f'[{ts()}] {prefix} hour {h}: true anomaly export failed, falling back to pseudo anomaly.')
-        radius = 26
-        pseudo_anomaly = pseudo_z500_anomaly_m(forecast_height_dam, radius_px=radius)
-        _export_and_annotate(_build_composite(pseudo_anomaly, allow_nh_contours=False), use_scale=False)
-        return
+        plans = [
+            {'use_scale': True, 'contour_interval': 6, 'label': 'scale + 6dm contours'},
+            {'use_scale': True, 'contour_interval': 12, 'label': 'scale + 12dm contours'},
+            {'use_scale': False, 'contour_interval': 12, 'label': 'dims + 12dm contours'},
+        ]
+    else:
+        plans = [
+            {'use_scale': True, 'contour_interval': 6, 'label': 'scale + 6dm contours'},
+            {'use_scale': False, 'contour_interval': 6, 'label': 'dims + 6dm contours'},
+            {'use_scale': False, 'contour_interval': 12, 'label': 'dims + 12dm contours'},
+        ]
 
-    try:
-        _export_and_annotate(_build_composite(true_anomaly, allow_nh_contours=False), use_scale=True)
-    except Exception as e:
-        msg = str(e)
-        if not _is_recoverable_export_error(msg):
-            raise
-        print(f'[{ts()}] {prefix} hour {h}: falling back to pseudo anomaly after EE export failure.')
-        radius = 20
-        pseudo_anomaly = pseudo_z500_anomaly_m(forecast_height_dam, radius_px=radius)
-        _export_and_annotate(_build_composite(pseudo_anomaly, allow_nh_contours=False), use_scale=False)
+    last_msg = ''
+    for plan in plans:
+        try:
+            _export_and_annotate(
+                _build_composite(true_anomaly, contour_interval=plan['contour_interval']),
+                use_scale=plan['use_scale'],
+            )
+            return
+        except Exception as e:
+            msg = str(e)
+            if not _is_recoverable_export_error(msg):
+                raise
+            last_msg = msg
+            print(f'[{ts()}] {prefix} hour {h}: true anomaly export retry failed ({plan["label"]}).')
+
+    short_msg = (last_msg or 'Unknown export error').replace('\n', ' ')[:220]
+    raise RuntimeError(
+        f'{prefix} hour {h}: true-anomaly-only export failed after retries (fallback disabled). Last error: {short_msg}'
+    )
 
 
 def derive_precip_phase(img, region_geom):
