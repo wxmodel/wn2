@@ -71,6 +71,7 @@ NE_ZOOM_SNOW_THUMB_REGION = [-76.9, 38.0, -70.0, 43.3]
 
 # Boundaries overlays
 COUNTRIES = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
+COUNTRIES_BORDERS = ee.FeatureCollection('USDOS/LSIB/2017')
 US_STATES = ee.FeatureCollection('TIGER/2018/States')
 NE_STATE_NAMES = [
     'Connecticut', 'Delaware', 'Maine', 'Maryland', 'Massachusetts',
@@ -448,11 +449,16 @@ def parse_utc_timestamp(raw):
     if raw is None:
         return None
     text = str(raw).strip()
+    # Workflow/manual inputs sometimes include wrapping quotes.
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        text = text[1:-1].strip()
     if not text:
         return None
 
     # Accept both trailing Z and z from workflow inputs.
     iso_text = text[:-1] + '+00:00' if text.lower().endswith('z') else text
+    if len(iso_text) >= 5 and iso_text[-5] in ('+', '-') and iso_text[-3] != ':':
+        iso_text = iso_text[:-2] + ':' + iso_text[-2:]
     try:
         dt = datetime.fromisoformat(iso_text)
         if dt.tzinfo is None:
@@ -461,7 +467,14 @@ def parse_utc_timestamp(raw):
     except ValueError:
         pass
 
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H",
+        "%Y-%m-%d %H",
+    ):
         try:
             return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
         except ValueError:
@@ -696,7 +709,7 @@ def contour_overlay(field, interval, color, opacity=0.82):
 
 
 def border_overlay(include_states=False, state_names=None):
-    country_lines = ee.Image().byte().paint(COUNTRIES, 1, 1).selfMask().visualize(palette=['#333333'])
+    country_lines = ee.Image().byte().paint(COUNTRIES_BORDERS, 1, 1).selfMask().visualize(palette=['#333333'])
     if include_states:
         state_fc = US_STATES if not state_names else US_STATES.filter(ee.Filter.inList('NAME', state_names))
         state_lines = ee.Image().byte().paint(state_fc, 1, 1).selfMask().visualize(palette=['#6b4a2c'])
@@ -768,8 +781,9 @@ def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global'):
     if region_geom is not None:
         forecast_height_m = forecast_height_m.clip(region_geom)
         climo_height_m = climo_height_m.clip(region_geom)
-    forecast_height_m = forecast_height_m.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
-    climo_height_m = climo_height_m.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
+    if cache_tag != 'nh_z500a':
+        forecast_height_m = forecast_height_m.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
+        climo_height_m = climo_height_m.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
     return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
 
 
@@ -1237,29 +1251,41 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=89.0):
             lon = lon0 - math.degrees(math.atan2(dx, -dy))
             lon = ((lon + 180.0) % 360.0) - 180.0
 
-            sx = int(round((lon + 180.0) / 360.0 * (sw - 1)))
-            if sx < 0:
-                sx = 0
-            elif sx >= sw:
-                sx = sw - 1
-            sy = int(round((lat_max - lat) / (lat_max - lat_min) * (sh - 1)))
-            if sy < 0:
-                sy = 0
-            elif sy >= sh:
-                sy = sh - 1
+            sx_f = (lon + 180.0) / 360.0 * (sw - 1)
+            sy_f = (lat_max - lat) / (lat_max - lat_min) * (sh - 1)
+            if sx_f < 0.0:
+                sx_f = 0.0
+            elif sx_f > (sw - 1):
+                sx_f = float(sw - 1)
+            if sy_f < 0.0:
+                sy_f = 0.0
+            elif sy_f > (sh - 1):
+                sy_f = float(sh - 1)
 
-            out_px[x, y] = src_px[sx, sy]
+            x0 = int(math.floor(sx_f))
+            y0 = int(math.floor(sy_f))
+            x1 = min(sw - 1, x0 + 1)
+            y1 = min(sh - 1, y0 + 1)
+            wx = sx_f - x0
+            wy = sy_f - y0
+
+            c00 = src_px[x0, y0]
+            c10 = src_px[x1, y0]
+            c01 = src_px[x0, y1]
+            c11 = src_px[x1, y1]
+
+            w00 = (1.0 - wx) * (1.0 - wy)
+            w10 = wx * (1.0 - wy)
+            w01 = (1.0 - wx) * wy
+            w11 = wx * wy
+
+            rch = int(round(c00[0] * w00 + c10[0] * w10 + c01[0] * w01 + c11[0] * w11))
+            gch = int(round(c00[1] * w00 + c10[1] * w10 + c01[1] * w01 + c11[1] * w11))
+            bch = int(round(c00[2] * w00 + c10[2] * w10 + c01[2] * w01 + c11[2] * w11))
+            out_px[x, y] = (rch, gch, bch)
 
     draw = ImageDraw.Draw(out_img)
-    for lat_line in [30, 40, 50, 60, 70, 80]:
-        rr = (90.0 - lat_line) / (90.0 - lat_min) * radius
-        draw.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), outline=(120, 120, 120), width=1)
-    for lon_deg in range(0, 360, 30):
-        ang = math.radians(lon0 - lon_deg)
-        x2 = cx + radius * math.sin(ang)
-        y2 = cy - radius * math.cos(ang)
-        draw.line((cx, cy, x2, y2), fill=(120, 120, 120), width=1)
-    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(35, 35, 35), width=3)
+    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(44, 44, 44), width=2)
 
     out_img.save(out_file, format='JPEG', quality=97, subsampling=0)
 
@@ -1339,9 +1365,6 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
 def generate_z500_anomaly_map(img, h, region, prefix):
     if prefix == 'nh_z500a':
         region_geom = NH_REGION
-        export_region = NH_SOURCE_REGION
-        export_crs = None
-        map_dims = NH_SOURCE_DIMS
     else:
         region_geom = ee.Geometry.Rectangle(region, geodesic=False)
         export_region = region
@@ -1357,9 +1380,14 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             palette=ANOMALY_PALETTE,
         )
         if prefix == 'nh_z500a':
-            # Keep NH background raster-only to avoid dateline vector transform errors.
-            base = ee.Image.constant(1).clip(region_geom).visualize(palette=['#d9e5ee'], opacity=1.0)
-            overlays = [base, anomaly_layer]
+            # NH contour generation can produce invalid transform edges in EE thumbnails.
+            # Keep anomaly + basemap + country borders for stable renders.
+            overlays = [
+                basemap_overlay(WORLD_REGION, land_color='#d8d8d8', ocean_color='#d9e5ee'),
+                anomaly_layer,
+                border_overlay(include_states=False),
+            ]
+            return ee.ImageCollection(overlays).mosaic()
         else:
             z500_contours = contour_overlay(
                 forecast_height_dam.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M),
@@ -1398,10 +1426,14 @@ def generate_z500_anomaly_map(img, h, region, prefix):
 
     true_anomaly = z500_anomaly_m(img, h, region_geom=region_geom, cache_tag=prefix)
     try:
-        _export_and_annotate(_build_composite(true_anomaly), use_scale=True)
+        _export_and_annotate(_build_composite(true_anomaly), use_scale=(prefix != 'nh_z500a'))
     except Exception as e:
         msg = str(e)
-        if 'User memory limit exceeded' not in msg and 'Unable to transform edge' not in msg:
+        if (
+            'User memory limit exceeded' not in msg
+            and 'Unable to transform edge' not in msg
+            and 'Invalid argument' not in msg
+        ):
             raise
         print(f'[{ts()}] {prefix} hour {h}: falling back to pseudo anomaly after EE export failure.')
         radius = 26 if prefix == 'nh_z500a' else 20
