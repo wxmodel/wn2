@@ -237,9 +237,9 @@ if FAST_RENDER:
     SNOW_NE_DIMS = '1200x980'
     NH_SOURCE_DIMS = '2000x400'
     NH_POLAR_DIMS = 980
-    ANOMALY_NA_SCALE_M = 36000
-    ANOMALY_NH_SCALE_M = 50000
-    ANOMALY_WORK_SCALE_M = 130000
+    ANOMALY_NA_SCALE_M = 42000
+    ANOMALY_NH_SCALE_M = 62000
+    ANOMALY_WORK_SCALE_M = 160000
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -250,9 +250,9 @@ else:
     SNOW_NE_DIMS = '1400x1120'
     NH_SOURCE_DIMS = '2200x440'
     NH_POLAR_DIMS = 1080
-    ANOMALY_NA_SCALE_M = 32000
-    ANOMALY_NH_SCALE_M = 45000
-    ANOMALY_WORK_SCALE_M = 120000
+    ANOMALY_NA_SCALE_M = 42000
+    ANOMALY_NH_SCALE_M = 62000
+    ANOMALY_WORK_SCALE_M = 180000
 
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
@@ -1933,12 +1933,13 @@ for h in HOURS:
     img = get_hour_image(h)
     snow_for_hour = snow_accum_by_hour.get(h, zero_snow)
 
+    z500_tasks = []
     tasks = []
     enabled_keys = {k for k, _, _ in ENABLED_PRODUCTS}
     if 'nh_z500a' in enabled_keys:
-        tasks.append(('nh_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NH_THUMB_REGION, 'nh_z500a')))
+        z500_tasks.append(('nh_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NH_THUMB_REGION, 'nh_z500a')))
     if 'na_z500a' in enabled_keys:
-        tasks.append(('na_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NA_THUMB_REGION, 'na_z500a')))
+        z500_tasks.append(('na_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NA_THUMB_REGION, 'na_z500a')))
     if 'conus_mslp_ptype' in enabled_keys:
         tasks.append(('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, CONUS_THUMB_REGION, 'conus_mslp_ptype')))
     if 'ne_mslp_ptype' in enabled_keys:
@@ -1984,6 +1985,22 @@ for h in HOURS:
                     snow_ratio=rr,
                 ),
             ))
+
+    # Run heavy z500 true-anomaly products serially to reduce EE memory-limit failures.
+    for name, fn in z500_tasks:
+        try:
+            fn()
+            successful_exports += 1
+        except Exception as e:
+            err_msg = str(e)
+            print(f'[{ts()}] Hour {h} product {name}: FAILED - {err_msg}')
+            failures.append((f'{h}:{name}', err_msg))
+            if 'earthengine.thumbnails.create' in err_msg:
+                raise RuntimeError(
+                    "Earth Engine permission denied: earthengine.thumbnails.create. "
+                    "Grant the service account Earth Engine User (or Admin) on EE_PROJECT and ensure Earth Engine API is enabled."
+                ) from e
+
     with ThreadPoolExecutor(max_workers=EXPORT_WORKERS) as pool:
         future_to_name = {pool.submit(fn): name for name, fn in tasks}
         for future in as_completed(future_to_name):
