@@ -237,9 +237,9 @@ if FAST_RENDER:
     SNOW_NE_DIMS = '1200x980'
     NH_SOURCE_DIMS = '2000x400'
     NH_POLAR_DIMS = 980
-    ANOMALY_NA_SCALE_M = 42000
-    ANOMALY_NH_SCALE_M = 62000
-    ANOMALY_WORK_SCALE_M = 160000
+    ANOMALY_NA_SCALE_M = 52000
+    ANOMALY_NH_SCALE_M = 76000
+    ANOMALY_WORK_SCALE_M = 220000
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -250,9 +250,9 @@ else:
     SNOW_NE_DIMS = '1400x1120'
     NH_SOURCE_DIMS = '2200x440'
     NH_POLAR_DIMS = 1080
-    ANOMALY_NA_SCALE_M = 42000
-    ANOMALY_NH_SCALE_M = 62000
-    ANOMALY_WORK_SCALE_M = 180000
+    ANOMALY_NA_SCALE_M = 52000
+    ANOMALY_NH_SCALE_M = 76000
+    ANOMALY_WORK_SCALE_M = 240000
 
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
@@ -708,23 +708,24 @@ def get_hour_image(h):
 
 
 # --- 3. METEOROLOGY LOGIC ---
-def contour_overlay(field, interval, color, opacity=0.82, smooth_px=1, thicken_px=0):
-    # Draw contour lines by detecting quantization edges.
+def contour_overlay(field, interval, color, opacity=0.82, smooth_px=0, thicken_px=0, line_width_frac=0.055):
+    # Draw contour lines using distance-to-nearest multiple of interval (cheaper than neighborhood edge ops).
     smoothed = field.resample('bilinear')
     if smooth_px and smooth_px > 0:
         smoothed = smoothed.focalMean(int(smooth_px), 'circle', 'pixels')
-    quantized = smoothed.divide(interval).round()
-    edges = quantized.focalMax(1).neq(quantized.focalMin(1))
+    scaled = smoothed.divide(float(interval))
+    dist = scaled.subtract(scaled.round()).abs()
+    lines = dist.lte(float(line_width_frac))
     if thicken_px and thicken_px > 0:
-        edges = edges.focalMax(int(thicken_px))
-    return edges.selfMask().visualize(palette=[color], opacity=opacity)
+        lines = lines.focalMax(int(thicken_px))
+    return lines.selfMask().visualize(palette=[color], opacity=opacity)
 
 
-def highlight_iso_overlay(field, level, color='#2455ff', opacity=0.92, tolerance=1.2, smooth_px=1):
+def highlight_iso_overlay(field, level, color='#2455ff', opacity=0.92, tolerance=1.2, smooth_px=0):
     smoothed = field.resample('bilinear')
     if smooth_px and smooth_px > 0:
         smoothed = smoothed.focalMean(int(smooth_px), 'circle', 'pixels')
-    line = smoothed.subtract(float(level)).abs().lte(float(tolerance)).focalMax(1).selfMask()
+    line = smoothed.subtract(float(level)).abs().lte(float(tolerance)).selfMask()
     return line.visualize(palette=[color], opacity=opacity)
 
 
@@ -790,14 +791,10 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global'):
     start_doy = doy - CLIMO_DOY_WINDOW_DAYS
     end_doy = doy + CLIMO_DOY_WINDOW_DAYS
     hour_collection = CLIMO_H500_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
-    if region_geom is not None:
-        hour_collection = hour_collection.map(lambda im: ee.Image(im).clip(region_geom))
     window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
     fallback_collection = CLIMO_H500_COLLECTION.filter(
         ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
-    if region_geom is not None:
-        fallback_collection = fallback_collection.map(lambda im: ee.Image(im).clip(region_geom))
     climo = ee.Image(
         ee.Algorithms.If(
             window_collection.size().gt(0),
@@ -816,9 +813,9 @@ def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global'):
     if region_geom is not None:
         forecast_height_m = forecast_height_m.clip(region_geom)
         climo_height_m = climo_height_m.clip(region_geom)
-    if cache_tag != 'nh_z500a':
-        forecast_height_m = forecast_height_m.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
-        climo_height_m = climo_height_m.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
+    work_scale = ANOMALY_WORK_SCALE_M * (1.30 if cache_tag == 'nh_z500a' else 1.0)
+    forecast_height_m = forecast_height_m.reproject(crs=TARGET_CRS, scale=work_scale)
+    climo_height_m = climo_height_m.reproject(crs=TARGET_CRS, scale=work_scale)
     return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
 
 
