@@ -1929,98 +1929,115 @@ if needs_snow_accum:
 else:
     zero_snow = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
 
-for h in HOURS:
-    print(f'Generating Hour {h}...')
-    img = get_hour_image(h)
-    snow_for_hour = snow_accum_by_hour.get(h, zero_snow)
+enabled_keys = {k for k, _, _ in ENABLED_PRODUCTS}
+hour_image_cache = {}
 
-    z500_tasks = []
-    tasks = []
-    enabled_keys = {k for k, _, _ in ENABLED_PRODUCTS}
-    if 'nh_z500a' in enabled_keys:
-        z500_tasks.append(('nh_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NH_THUMB_REGION, 'nh_z500a')))
-    if 'na_z500a' in enabled_keys:
-        z500_tasks.append(('na_z500a', lambda i=img, hh=h: generate_z500_anomaly_map(i, hh, NA_THUMB_REGION, 'na_z500a')))
-    if 'conus_mslp_ptype' in enabled_keys:
-        tasks.append(('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, CONUS_THUMB_REGION, 'conus_mslp_ptype')))
-    if 'ne_mslp_ptype' in enabled_keys:
-        tasks.append(('ne_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, NE_THUMB_REGION, 'ne_mslp_ptype')))
-    if 'conus_vort500' in enabled_keys:
-        tasks.append(('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)))
-    if 'conus_snow_accum' in enabled_keys:
-        for ratio in SNOW_RATIOS:
-            tasks.append((
-                f'conus_snow_accum_r{ratio:02d}',
-                lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
-                    i,
-                    hh,
-                    s,
-                    CONUS_THUMB_REGION,
-                    'conus_snow_accum',
-                    snow_ratio=rr,
-                ),
-            ))
-    if 'ne_snow_accum' in enabled_keys:
-        for ratio in SNOW_RATIOS:
-            tasks.append((
-                f'ne_snow_accum_r{ratio:02d}',
-                lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
-                    i,
-                    hh,
-                    s,
-                    NE_THUMB_REGION,
-                    'ne_snow_accum',
-                    snow_ratio=rr,
-                ),
-            ))
-    if 'ne_zoom_snow_accum' in enabled_keys:
-        for ratio in SNOW_RATIOS:
-            tasks.append((
-                f'ne_zoom_snow_accum_r{ratio:02d}',
-                lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
-                    i,
-                    hh,
-                    s,
-                    NE_ZOOM_SNOW_THUMB_REGION,
-                    'ne_zoom_snow_accum',
-                    snow_ratio=rr,
-                ),
-            ))
 
-    # Run heavy z500 true-anomaly products serially to reduce EE memory-limit failures.
-    for name, fn in z500_tasks:
+def get_cached_hour_image(hour):
+    cached = hour_image_cache.get(hour)
+    if cached is None:
+        cached = get_hour_image(hour)
+        hour_image_cache[hour] = cached
+    return cached
+
+
+def _record_task_failure(hour, name, err_msg, exc):
+    print(f'[{ts()}] Hour {hour} product {name}: FAILED - {err_msg}')
+    failures.append((f'{hour}:{name}', err_msg))
+    if 'earthengine.thumbnails.create' in err_msg:
+        raise RuntimeError(
+            "Earth Engine permission denied: earthengine.thumbnails.create. "
+            "Grant the service account Earth Engine User (or Admin) on EE_PROJECT and ensure Earth Engine API is enabled."
+        ) from exc
+
+
+if 'nh_z500a' in enabled_keys:
+    print(f'[{ts()}] Phase 1/3: generating NH z500 true-anomaly maps first.')
+    for h in HOURS:
+        print(f'Generating Hour {h} [NH z500]...')
+        img = get_cached_hour_image(h)
         try:
-            fn()
+            generate_z500_anomaly_map(img, h, NH_THUMB_REGION, 'nh_z500a')
             successful_exports += 1
         except Exception as e:
-            err_msg = str(e)
-            print(f'[{ts()}] Hour {h} product {name}: FAILED - {err_msg}')
-            failures.append((f'{h}:{name}', err_msg))
-            if 'earthengine.thumbnails.create' in err_msg:
-                raise RuntimeError(
-                    "Earth Engine permission denied: earthengine.thumbnails.create. "
-                    "Grant the service account Earth Engine User (or Admin) on EE_PROJECT and ensure Earth Engine API is enabled."
-                ) from e
+            _record_task_failure(h, 'nh_z500a', str(e), e)
 
-    with ThreadPoolExecutor(max_workers=EXPORT_WORKERS) as pool:
-        future_to_name = {pool.submit(fn): name for name, fn in tasks}
-        for future in as_completed(future_to_name):
-            name = future_to_name[future]
-            try:
-                future.result()
-                successful_exports += 1
-            except Exception as e:
-                err_msg = str(e)
-                print(f'[{ts()}] Hour {h} product {name}: FAILED - {err_msg}')
-                failures.append((f'{h}:{name}', err_msg))
-                if 'earthengine.thumbnails.create' in err_msg:
-                    for pending in future_to_name:
-                        if pending is not future:
-                            pending.cancel()
-                    raise RuntimeError(
-                        "Earth Engine permission denied: earthengine.thumbnails.create. "
-                        "Grant the service account Earth Engine User (or Admin) on EE_PROJECT and ensure Earth Engine API is enabled."
-                    ) from e
+non_z500_enabled = [k for k in enabled_keys if k not in {'nh_z500a', 'na_z500a'}]
+if non_z500_enabled:
+    print(f'[{ts()}] Phase 2/3: generating non-z500 products.')
+    for h in HOURS:
+        print(f'Generating Hour {h} [core products]...')
+        img = get_cached_hour_image(h)
+        snow_for_hour = snow_accum_by_hour.get(h, zero_snow)
+        tasks = []
+
+        if 'conus_mslp_ptype' in enabled_keys:
+            tasks.append(('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, CONUS_THUMB_REGION, 'conus_mslp_ptype')))
+        if 'ne_mslp_ptype' in enabled_keys:
+            tasks.append(('ne_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, NE_THUMB_REGION, 'ne_mslp_ptype')))
+        if 'conus_vort500' in enabled_keys:
+            tasks.append(('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)))
+        if 'conus_snow_accum' in enabled_keys:
+            for ratio in SNOW_RATIOS:
+                tasks.append((
+                    f'conus_snow_accum_r{ratio:02d}',
+                    lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                        i,
+                        hh,
+                        s,
+                        CONUS_THUMB_REGION,
+                        'conus_snow_accum',
+                        snow_ratio=rr,
+                    ),
+                ))
+        if 'ne_snow_accum' in enabled_keys:
+            for ratio in SNOW_RATIOS:
+                tasks.append((
+                    f'ne_snow_accum_r{ratio:02d}',
+                    lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                        i,
+                        hh,
+                        s,
+                        NE_THUMB_REGION,
+                        'ne_snow_accum',
+                        snow_ratio=rr,
+                    ),
+                ))
+        if 'ne_zoom_snow_accum' in enabled_keys:
+            for ratio in SNOW_RATIOS:
+                tasks.append((
+                    f'ne_zoom_snow_accum_r{ratio:02d}',
+                    lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                        i,
+                        hh,
+                        s,
+                        NE_ZOOM_SNOW_THUMB_REGION,
+                        'ne_zoom_snow_accum',
+                        snow_ratio=rr,
+                    ),
+                ))
+
+        with ThreadPoolExecutor(max_workers=EXPORT_WORKERS) as pool:
+            future_to_name = {pool.submit(fn): name for name, fn in tasks}
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                try:
+                    future.result()
+                    successful_exports += 1
+                except Exception as e:
+                    err_msg = str(e)
+                    _record_task_failure(h, name, err_msg, e)
+
+if 'na_z500a' in enabled_keys:
+    print(f'[{ts()}] Phase 3/3: generating NA z500 true-anomaly maps last.')
+    for h in HOURS:
+        print(f'Generating Hour {h} [NA z500]...')
+        img = get_cached_hour_image(h)
+        try:
+            generate_z500_anomaly_map(img, h, NA_THUMB_REGION, 'na_z500a')
+            successful_exports += 1
+        except Exception as e:
+            _record_task_failure(h, 'na_z500a', str(e), e)
 
 if failures:
     print(f'[{ts()}] Completed with {len(failures)} failed hour(s).')
