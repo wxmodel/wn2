@@ -263,17 +263,18 @@ EXPORT_WORKERS = max(1, min(4, EXPORT_WORKERS))
 print(f'[{ts()}] Render profile: fast={FAST_RENDER}, workers={EXPORT_WORKERS}, dims={ANOMALY_DIMS}/{CONUS_DIMS}.')
 
 ANOMALY_PALETTE = [
-    '#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#9fd7f5',
-    '#e8e8dd',
-    '#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16'
+    '#f45bd2', '#b13bc4', '#7240c7', '#3e56d3', '#2c76e4', '#319cf0',
+    '#49c6f2', '#32dd8f', '#2fd63b', '#8fe47a',
+    '#d9dde2',
+    '#f1f2a6', '#f6d06b', '#f9a64b', '#f66b2f', '#e3371f', '#b51b10', '#6d0908'
 ]
 ANOMALY_NEG_PALETTE = ['#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#9fd7f5']
 ANOMALY_POS_PALETTE = ['#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16']
 ANOMALY_MIN_M = -300
 ANOMALY_MAX_M = 300
 ANOMALY_NEUTRAL_M = 8
-ANOMALY_DISPLAY_GAIN = 1.05
-ANOMALY_SMOOTH_RADIUS_PX = 1
+ANOMALY_DISPLAY_GAIN = 1.45
+ANOMALY_SMOOTH_RADIUS_PX = 0
 BASEMAP_LAND_COLOR = '#dbe1e7'
 BASEMAP_OCEAN_COLOR = '#c9d6e2'
 VORTICITY_PALETTE = ['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f']
