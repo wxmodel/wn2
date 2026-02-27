@@ -5,6 +5,7 @@ import time
 import glob
 import hashlib
 import math
+import re
 import shutil
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -241,7 +242,7 @@ if FAST_RENDER:
     NH_POLAR_DIMS = 980
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
-    ANOMALY_WORK_SCALE_M = 220000
+    ANOMALY_WORK_SCALE_M = 180000
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -254,7 +255,7 @@ else:
     NH_POLAR_DIMS = 1080
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
-    ANOMALY_WORK_SCALE_M = 240000
+    ANOMALY_WORK_SCALE_M = 200000
 
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
@@ -265,20 +266,22 @@ EXPORT_WORKERS = max(1, min(4, EXPORT_WORKERS))
 print(f'[{ts()}] Render profile: fast={FAST_RENDER}, workers={EXPORT_WORKERS}, dims={ANOMALY_DIMS}/{CONUS_DIMS}.')
 
 ANOMALY_PALETTE = [
-    '#f45bd2', '#b13bc4', '#7240c7', '#3e56d3', '#2c76e4', '#319cf0',
-    '#49c6f2', '#32dd8f', '#2fd63b', '#8fe47a',
+    '#f057da', '#b23ccf', '#7244cf', '#4062db', '#2b85eb', '#2eaef1',
+    '#39d6ff', '#29d652', '#84e86a',
     '#d9dde2',
-    '#f1f2a6', '#f6d06b', '#f9a64b', '#f66b2f', '#e3371f', '#b51b10', '#6d0908'
+    '#f4ee9a', '#f7c96d', '#f59a50', '#ee6537', '#dd3125', '#9b1416'
 ]
 ANOMALY_NEG_PALETTE = ['#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#9fd7f5']
 ANOMALY_POS_PALETTE = ['#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16']
-ANOMALY_MIN_M = -300
-ANOMALY_MAX_M = 300
-ANOMALY_NEUTRAL_M = 8
-ANOMALY_DISPLAY_GAIN = 1.45
+ANOMALY_MIN_M = -240
+ANOMALY_MAX_M = 240
+ANOMALY_NEUTRAL_M = 6
+ANOMALY_DISPLAY_GAIN = 1.85
 ANOMALY_SMOOTH_RADIUS_PX = 0
-BASEMAP_LAND_COLOR = '#dbe1e7'
-BASEMAP_OCEAN_COLOR = '#c9d6e2'
+BASEMAP_LAND_COLOR = '#e6ebef'
+BASEMAP_OCEAN_COLOR = '#d6dde4'
+Z500_MINOR_CONTOUR_INTERVAL = 6
+Z500_MAJOR_CONTOUR_INTERVAL = 12
 VORTICITY_PALETTE = ['#f5ee00', '#f4c236', '#ee8c4a', '#d35a75', '#a03ca0', '#5f209f']
 RAIN_RATE_PALETTE = ['#a9ee80', '#7ad35a', '#4eb744', '#2f9637', '#f7ea00', '#ffbf00', '#ff8a00', '#ff4200', '#b70000', '#c21cff']
 SNOW_RATE_PALETTE = ['#0a1f6f', '#0d2f8f', '#1448b1', '#1f66cc', '#2d84df', '#45a6ef', '#63c2ff']
@@ -755,10 +758,15 @@ def highlight_iso_overlay(field, level, color='#2455ff', opacity=0.92, tolerance
     return line.visualize(palette=[color], opacity=opacity)
 
 
-def border_overlay(include_states=False, state_names=None):
-    country_lines = ee.Image().byte().paint(COUNTRIES_BORDERS, 1, 1).selfMask().visualize(palette=['#333333'])
+def border_overlay(include_states=False, state_names=None, region_geom=None, detailed=True):
+    country_fc = COUNTRIES_BORDERS if detailed else COUNTRIES
+    if region_geom is not None:
+        country_fc = country_fc.filterBounds(region_geom)
+    country_lines = ee.Image().byte().paint(country_fc, 1, 1).selfMask().visualize(palette=['#333333'])
     if include_states:
         state_fc = US_STATES if not state_names else US_STATES.filter(ee.Filter.inList('NAME', state_names))
+        if region_geom is not None:
+            state_fc = state_fc.filterBounds(region_geom)
         state_lines = ee.Image().byte().paint(state_fc, 1, 1).selfMask().visualize(palette=['#6b4a2c'])
         return ee.ImageCollection([country_lines, state_lines]).mosaic()
     return country_lines
@@ -767,6 +775,8 @@ def border_overlay(include_states=False, state_names=None):
 def basemap_overlay(region_geom, land_color='#ececec', ocean_color='#cfe0ea', land_fc=None):
     ocean = ee.Image.constant(1).clip(region_geom).visualize(palette=[ocean_color], opacity=1.0)
     land_features = land_fc if land_fc is not None else COUNTRIES
+    if region_geom is not None:
+        land_features = land_features.filterBounds(region_geom)
     land_mask = ee.Image().byte().paint(land_features, 1, 1).clip(region_geom).selfMask()
     land = land_mask.visualize(palette=[land_color], opacity=1.0)
     return ee.ImageCollection([ocean, land]).mosaic()
@@ -839,9 +849,8 @@ def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global'):
     if region_geom is not None:
         forecast_height_m = forecast_height_m.clip(region_geom)
         climo_height_m = climo_height_m.clip(region_geom)
-    work_scale = ANOMALY_WORK_SCALE_M * (1.30 if cache_tag == 'nh_z500a' else 1.0)
-    forecast_height_m = forecast_height_m.reproject(crs=TARGET_CRS, scale=work_scale)
-    climo_height_m = climo_height_m.reproject(crs=TARGET_CRS, scale=work_scale)
+    forecast_height_m = forecast_height_m.resample('bilinear')
+    climo_height_m = climo_height_m.resample('bilinear')
     return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
 
 
@@ -1108,7 +1117,7 @@ def _draw_legend(draw, product_key, width, y, snow_ratio=10):
             bar_y,
             bar_w,
             bar_h,
-            [-300, -200, -100, -50, 0, 50, 100, 200, 300],
+            [-240, -180, -120, -60, 0, 60, 120, 180, 240],
             ANOMALY_MIN_M,
             ANOMALY_MAX_M,
             tick_font,
@@ -1464,6 +1473,35 @@ def stitch_horizontal(left_file, right_file, out_file):
     stitched.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 
+def export_nh_split_composite(composite, out_file, dimensions):
+    split_dims = split_nh_dimensions(dimensions)
+    west_tmp = f'{out_file}.west_tmp.jpg'
+    east_tmp = f'{out_file}.east_tmp.jpg'
+    try:
+        export_composite(
+            composite.clip(NH_W),
+            west_tmp,
+            NH_W_BOUNDS,
+            dimensions=split_dims,
+            crs=TARGET_CRS,
+        )
+        export_composite(
+            composite.clip(NH_E),
+            east_tmp,
+            NH_E_BOUNDS,
+            dimensions=split_dims,
+            crs=TARGET_CRS,
+        )
+        stitch_horizontal(west_tmp, east_tmp, out_file)
+    finally:
+        for tmp in (west_tmp, east_tmp):
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+
 def export_composite(composite, out_file, region, dimensions=1600, scale=None, crs=None):
     print(f'[{ts()}] Exporting {out_file}...')
     t0 = time.time()
@@ -1471,7 +1509,7 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
     current_dimensions = dimensions
     current_scale = scale
 
-    for attempt in range(1, 5):
+    for attempt in range(1, 6):
         params = {
             'region': current_region,
             'format': 'jpg',
@@ -1496,19 +1534,24 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
             is_memory = status == 400 and 'User memory limit exceeded' in body
             is_transform = status == 400 and 'Unable to transform edge' in body
 
-            if attempt < 4 and is_memory:
+            if attempt < 5 and is_memory:
                 if current_scale is not None:
-                    current_scale = int(max(2000, current_scale * 1.45))
+                    current_scale = int(max(2000, current_scale * 1.30))
                 else:
                     current_dimensions = shrink_dimensions(current_dimensions)
-                print(f'[{ts()}] Retry {attempt}/3 for {out_file} after memory limit.')
+                wait_s = min(24, 4 * attempt)
+                print(
+                    f'[{ts()}] Retry {attempt}/4 for {out_file} after memory limit '
+                    f'(wait {wait_s}s, next scale={current_scale}, next dims={current_dimensions}).'
+                )
+                time.sleep(wait_s)
                 continue
 
-            if attempt < 4 and is_transform:
+            if attempt < 5 and is_transform:
                 new_region = inset_region_bbox(current_region)
                 if new_region != current_region:
                     current_region = new_region
-                    print(f'[{ts()}] Retry {attempt}/3 for {out_file} with inset region to bypass transform edge.')
+                    print(f'[{ts()}] Retry {attempt}/4 for {out_file} with inset region to bypass transform edge.')
                     continue
 
             raise
@@ -1519,27 +1562,33 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
 def generate_z500_anomaly_map(img, h, region, prefix):
     if prefix == 'nh_z500a':
         region_geom = ee.Geometry.Rectangle(NH_SOURCE_REGION, geodesic=False)
-        export_region = NH_SOURCE_REGION
-        export_crs = TARGET_CRS
         map_dims = NH_SOURCE_DIMS
     else:
         region_geom = ee.Geometry.Rectangle(region, geodesic=False)
-        export_region = region
-        export_crs = None
         map_dims = region_dimensions(ANOMALY_DIMS, region)
 
     forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
     contour_field = forecast_height_dam.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
 
-    def _build_composite(anomaly_field, contour_interval=6):
+    def _build_composite(anomaly_field, minor_interval=Z500_MINOR_CONTOUR_INTERVAL, major_interval=Z500_MAJOR_CONTOUR_INTERVAL):
         anomaly_layer = anomaly_overlay(anomaly_field)
-        z500_contours = contour_overlay(
+        z500_minor = contour_overlay(
             contour_field,
-            interval=contour_interval,
-            color='#151515',
+            interval=minor_interval,
+            color='#202020',
+            opacity=0.55,
+            smooth_px=0,
+            thicken_px=0,
+            line_width_frac=0.050,
+        )
+        z500_major = contour_overlay(
+            contour_field,
+            interval=major_interval,
+            color='#121212',
             opacity=0.88,
             smooth_px=0,
             thicken_px=1,
+            line_width_frac=0.060,
         )
         z540_contour = highlight_iso_overlay(
             contour_field,
@@ -1552,42 +1601,37 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         overlays = [
             basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
             anomaly_layer,
-            z500_contours,
+            z500_minor,
+            z500_major,
             z540_contour,
-            border_overlay(include_states=False).clip(region_geom),
+            border_overlay(
+                include_states=False,
+                region_geom=region_geom,
+                detailed=(prefix != 'nh_z500a'),
+            ),
         ]
         return ee.ImageCollection(overlays).mosaic()
 
-    def _export_and_annotate(composite_image, use_scale=True):
+    def _export_and_annotate(composite_image, use_scale=True, dims_override=None):
         out_file = build_frame_path(prefix, h)
         if prefix == 'nh_z500a':
-            if use_scale:
-                export_composite(
-                    composite_image,
-                    out_file,
-                    export_region,
-                    scale=ANOMALY_NH_SCALE_M,
-                    crs=export_crs,
-                )
-            else:
-                export_composite(
-                    composite_image,
-                    out_file,
-                    export_region,
-                    dimensions=map_dims,
-                    crs=export_crs,
-                )
+            nh_dims = dims_override if dims_override is not None else (map_dims if use_scale else shrink_dimensions(map_dims))
+            export_nh_split_composite(
+                composite_image,
+                out_file,
+                dimensions=nh_dims,
+            )
             remap_nh_to_polar(out_file, lon0=NH_LON0)
             annotate_map_file(out_file, prefix, h)
             return
 
+        export_dims = dims_override if dims_override is not None else map_dims
         export_composite(
             composite_image,
             out_file,
-            export_region,
-            dimensions=map_dims,
+            region,
+            dimensions=export_dims,
             scale=(ANOMALY_NA_SCALE_M if use_scale else None),
-            crs=export_crs,
         )
         annotate_map_file(out_file, prefix, h)
 
@@ -1596,28 +1640,73 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             'User memory limit exceeded' in msg
             or 'Unable to transform edge' in msg
             or 'Invalid argument' in msg
+            or 'INVALID_ARGUMENT' in msg
         )
 
     true_anomaly = z500_anomaly_m(img, h, region_geom=region_geom, cache_tag=prefix)
     if prefix == 'nh_z500a':
+        mid_dims = shrink_dimensions(map_dims)
+        low_dims = shrink_dimensions(mid_dims)
         plans = [
-            {'use_scale': True, 'contour_interval': 6, 'label': 'scale + 6dm contours'},
-            {'use_scale': True, 'contour_interval': 12, 'label': 'scale + 12dm contours'},
-            {'use_scale': False, 'contour_interval': 12, 'label': 'dims + 12dm contours'},
+            {
+                'use_scale': True,
+                'dims': map_dims,
+                'minor_interval': Z500_MINOR_CONTOUR_INTERVAL,
+                'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'label': 'split full dims + major/minor contours',
+            },
+            {
+                'use_scale': True,
+                'dims': mid_dims,
+                'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'label': 'split mid dims + major contours',
+            },
+            {
+                'use_scale': True,
+                'dims': low_dims,
+                'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'major_interval': 18,
+                'label': 'split low dims + sparse contours',
+            },
         ]
     else:
+        mid_dims = shrink_dimensions(map_dims)
         plans = [
-            {'use_scale': True, 'contour_interval': 6, 'label': 'scale + 6dm contours'},
-            {'use_scale': False, 'contour_interval': 6, 'label': 'dims + 6dm contours'},
-            {'use_scale': False, 'contour_interval': 12, 'label': 'dims + 12dm contours'},
+            {
+                'use_scale': True,
+                'dims': map_dims,
+                'minor_interval': Z500_MINOR_CONTOUR_INTERVAL,
+                'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'label': 'scale + major/minor contours',
+            },
+            {
+                'use_scale': False,
+                'dims': map_dims,
+                'minor_interval': Z500_MINOR_CONTOUR_INTERVAL,
+                'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'label': 'dims + major/minor contours',
+            },
+            {
+                'use_scale': False,
+                'dims': mid_dims,
+                'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'label': 'dims reduced + major contours',
+            },
         ]
 
     last_msg = ''
     for plan in plans:
         try:
             _export_and_annotate(
-                _build_composite(true_anomaly, contour_interval=plan['contour_interval']),
+                _build_composite(
+                    true_anomaly,
+                    minor_interval=plan['minor_interval'],
+                    major_interval=plan['major_interval'],
+                ),
                 use_scale=plan['use_scale'],
+                dims_override=plan['dims'],
             )
             return
         except Exception as e:
@@ -2133,6 +2222,33 @@ def _record_task_failure(hour, name, err_msg, exc):
         ) from exc
 
 
+def write_step_summary(success_count, failure_items):
+    summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
+    if not summary_path:
+        return
+    try:
+        lines = [
+            '## WeatherNext2 Render Summary',
+            f'- Successful exports: {int(success_count)}',
+            f'- Failed exports: {len(failure_items)}',
+        ]
+        if failure_items:
+            lines.append('')
+            lines.append('### Failures')
+            for hour_key, msg in failure_items[:20]:
+                one_line = str(msg).replace('\n', ' ').strip()
+                if len(one_line) > 180:
+                    one_line = one_line[:180] + '...'
+                lines.append(f'- `{hour_key}`: {one_line}')
+            if len(failure_items) > 20:
+                lines.append(f'- ... and {len(failure_items) - 20} more')
+        lines.append('')
+        with open(summary_path, 'a', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+    except Exception as e:
+        print(f'[{ts()}] Warning: could not write GitHub step summary: {e}')
+
+
 if 'nh_z500a' in enabled_keys:
     print(f'[{ts()}] Phase 1/3: generating NH z500 true-anomaly maps first.')
     for h in HOURS:
@@ -2247,6 +2363,8 @@ if successful_exports > 0:
 else:
     print(f'[{ts()}] Skipping sanity check: no product images were created.')
 
+write_step_summary(successful_exports, failures)
+
 
 # --- 5. BUILD INTERFACE ---
 def parse_iso_utc(raw):
@@ -2304,20 +2422,104 @@ def load_manifest_entries(manifest_path):
     return entries
 
 
+FRAME_NAME_RE = re.compile(r'^(?P<product>[a-z0-9_]+?)(?:_r(?P<ratio>\d{2}))?_(?P<hour>\d{3})\.jpg$', re.IGNORECASE)
+
+
+def discover_run_product_frames(run_dir):
+    product_hours = {}
+    product_snow_ratios = {}
+    if not run_dir.exists() or not run_dir.is_dir():
+        return {}, {}
+
+    for frame_path in run_dir.glob('*.jpg'):
+        match = FRAME_NAME_RE.match(frame_path.name)
+        if not match:
+            continue
+        product = str(match.group('product') or '').strip()
+        if not product:
+            continue
+        hour = _parse_int(match.group('hour'))
+        if hour is None:
+            continue
+        product_hours.setdefault(product, set()).add(hour)
+        ratio_text = match.group('ratio')
+        if ratio_text is not None:
+            ratio = _parse_int(ratio_text)
+            if ratio is not None:
+                product_snow_ratios.setdefault(product, set()).add(ratio)
+
+    normalized_hours = {
+        key: sorted(values)
+        for key, values in product_hours.items()
+        if values
+    }
+    normalized_ratios = {
+        key: sorted(values)
+        for key, values in product_snow_ratios.items()
+        if values
+    }
+    return normalized_hours, normalized_ratios
+
+
+def normalize_product_hours_map(raw_map):
+    out = {}
+    if not isinstance(raw_map, dict):
+        return out
+    for raw_key, raw_values in raw_map.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        hours = normalize_int_list(raw_values, min_value=0)
+        if hours:
+            out[key] = hours
+    return out
+
+
+def normalize_product_ratio_map(raw_map):
+    out = {}
+    if not isinstance(raw_map, dict):
+        return out
+    for raw_key, raw_values in raw_map.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        ratios = normalize_int_list(raw_values, min_value=10, max_value=20)
+        if ratios:
+            out[key] = ratios
+    return out
+
+
 manifest_path = Path(OUTPUT) / 'runs_manifest.json'
 existing_entries = load_manifest_entries(manifest_path)
 now_utc = datetime.now(timezone.utc)
 cutoff_utc = now_utc - timedelta(hours=RUN_HISTORY_HOURS)
 enabled_keys = [key for key, _, _ in ENABLED_PRODUCTS]
-default_ratios = SNOW_RATIOS if any(k in SNOW_PRODUCT_KEYS for k in enabled_keys) else [10]
+product_order = {key: idx for idx, (key, _, _, _) in enumerate(PRODUCT_OPTIONS)}
+current_product_hours, current_product_snow_ratios = discover_run_product_frames(RUN_OUTPUT_DIR)
+current_products = [key for key in enabled_keys if key in current_product_hours]
+if not current_products:
+    current_products = sorted(
+        current_product_hours.keys(),
+        key=lambda k: (product_order.get(k, 999), k),
+    )
+current_hours = sorted({hour for values in current_product_hours.values() for hour in values})
+current_ratios = sorted({ratio for values in current_product_snow_ratios.values() for ratio in values})
+if not current_ratios and any(k in SNOW_PRODUCT_KEYS for k in current_products):
+    current_ratios = SNOW_RATIOS if SNOW_RATIOS else [10]
 current_entry = {
     'id': RUN_ID,
     'label': RUN_ID_LABEL,
     'run_date': run_date,
     'init_utc': iso_utc(RUN_INIT_UTC),
-    'hours': HOURS,
-    'products': enabled_keys,
-    'snow_ratios': default_ratios,
+    'hours': current_hours,
+    'products': current_products,
+    'snow_ratios': current_ratios if current_ratios else [10],
+    'product_hours': {key: current_product_hours[key] for key in current_products if key in current_product_hours},
+    'product_snow_ratios': {
+        key: current_product_snow_ratios[key]
+        for key in current_products
+        if key in current_product_snow_ratios
+    },
     'updated_utc': iso_utc(now_utc),
 }
 
@@ -2338,15 +2540,40 @@ for entry in [current_entry] + existing_entries:
     run_dir = RUNS_ROOT_DIR / rid
     if rid != RUN_ID and not run_dir.exists():
         continue
-    products = [str(p) for p in entry.get('products', []) if isinstance(p, str)]
+
+    discovered_hours, discovered_ratios = discover_run_product_frames(run_dir) if run_dir.exists() else ({}, {})
+    product_hours = discovered_hours or normalize_product_hours_map(entry.get('product_hours'))
+    product_snow_ratios = discovered_ratios or normalize_product_ratio_map(entry.get('product_snow_ratios'))
+
+    legacy_products = [str(p) for p in entry.get('products', []) if isinstance(p, str)]
+    legacy_hours = normalize_int_list(entry.get('hours', []), min_value=0)
+    if not product_hours and legacy_products and legacy_hours:
+        for key in legacy_products:
+            product_hours[key] = list(legacy_hours)
+
+    if not product_snow_ratios:
+        legacy_ratios = normalize_int_list(entry.get('snow_ratios', []), min_value=10, max_value=20)
+        if legacy_ratios:
+            for key in product_hours.keys():
+                if is_snow_product(key):
+                    product_snow_ratios[key] = list(legacy_ratios)
+
+    products = sorted(
+        [key for key, hours in product_hours.items() if hours],
+        key=lambda k: (product_order.get(k, 999), k),
+    )
     if not products:
         continue
-    snow_ratios = normalize_int_list(entry.get('snow_ratios', []), min_value=10, max_value=20)
-    if not snow_ratios:
-        snow_ratios = [10]
-    hours = normalize_int_list(entry.get('hours', []), min_value=0)
+    product_hours = {key: product_hours[key] for key in products if key in product_hours}
+    product_snow_ratios = {key: product_snow_ratios[key] for key in products if key in product_snow_ratios}
+
+    hours = sorted({hour for key in products for hour in product_hours.get(key, [])})
     if not hours:
         continue
+
+    snow_ratios = sorted({ratio for key in products for ratio in product_snow_ratios.get(key, [])})
+    if not snow_ratios and any(is_snow_product(key) for key in products):
+        snow_ratios = [10]
     merged[rid] = {
         'id': rid,
         'label': str(entry.get('label') or rid),
@@ -2355,6 +2582,8 @@ for entry in [current_entry] + existing_entries:
         'hours': hours,
         'products': products,
         'snow_ratios': snow_ratios,
+        'product_hours': product_hours,
+        'product_snow_ratios': product_snow_ratios,
         'updated_utc': str(entry.get('updated_utc') or iso_utc(now_utc)),
     }
 
@@ -2385,7 +2614,7 @@ html_template = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>WN2 Multi-Product Viewer</title>
+    <title>WeatherNext2 viewer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         :root {
@@ -2399,11 +2628,16 @@ html_template = """
             margin:0;
             padding-bottom:0;
         }
-        .wrap { max-width:1240px; margin:0 auto; padding:14px 10px 10px; }
+        .wrap {
+            max-width:1240px;
+            margin:0 auto;
+            padding:14px 10px calc(var(--controls-h) + 14px);
+        }
         .map-wrap {
             background:#111;
             border:1px solid #4f4f4f;
             height:60vh;
+            max-height:calc(100vh - var(--controls-h) - 30px);
             min-height:220px;
             display:flex;
             align-items:center;
@@ -2478,12 +2712,13 @@ html_template = """
             button { font-size:14px; padding:8px 12px; }
             select { font-size:14px; min-width:96px; }
             #label { min-width:86px; }
-            .bottom-controls { padding:10px 8px 12px; }
+            .bottom-controls { padding:10px 8px calc(14px + env(safe-area-inset-bottom)); }
             .row { gap:8px; }
             #hourSlider { width:min(960px, 96vw); }
             .map-wrap {
                 height:52vh;
                 min-height:160px;
+                max-height:calc(100vh - var(--controls-h) - 18px);
             }
         }
     </style>
@@ -2586,6 +2821,51 @@ html_template = """
             return product + '_' + hourStr + '.jpg';
         }
 
+        function getProductHours(run, product) {
+            if (!run || !product) return [];
+            const scoped = (run.product_hours && typeof run.product_hours === 'object')
+                ? run.product_hours[product]
+                : null;
+            const scopedHours = normalizeIntList(scoped, 0, null);
+            if (scopedHours.length) return scopedHours;
+            return normalizeIntList(run.hours, 0, null);
+        }
+
+        function getProductRatios(run, product) {
+            if (!run || !product) return [];
+            const scoped = (run.product_snow_ratios && typeof run.product_snow_ratios === 'object')
+                ? run.product_snow_ratios[product]
+                : null;
+            const scopedRatios = normalizeIntList(scoped, 10, 20);
+            if (scopedRatios.length) return scopedRatios;
+            return normalizeIntList(run.snow_ratios, 10, 20);
+        }
+
+        function syncProductScopedControls() {
+            const run = getCurrentRun();
+            if (!run) {
+                activeHours = [];
+                sliderEl.max = '0';
+                sliderEl.value = '0';
+                idx = 0;
+                return;
+            }
+            const product = productEl.value;
+            const isSnow = snowProducts.has(product);
+            const ratios = isSnow ? getProductRatios(run, product) : [];
+            setSelectOptions(ratioEl, ratios.length ? ratios : [10], (ratio) => ratio + ':1');
+            const previousHour = activeHours[idx];
+            activeHours = getProductHours(run, product);
+            if (activeHours.length === 0) {
+                idx = 0;
+            } else {
+                const found = activeHours.indexOf(previousHour);
+                idx = found >= 0 ? found : 0;
+            }
+            sliderEl.max = String(Math.max(0, activeHours.length - 1));
+            sliderEl.value = String(idx);
+        }
+
         function syncRunScopedControls() {
             const run = getCurrentRun();
             if (!run) {
@@ -2598,21 +2878,8 @@ html_template = """
                 return;
             }
             const products = Array.isArray(run.products) ? run.products : [];
-            const ratios = normalizeIntList(run.snow_ratios, 10, 20);
-            const hours = normalizeIntList(run.hours, 0, null);
             setSelectOptions(productEl, products, (key) => productLabels[key] || key);
-            setSelectOptions(ratioEl, ratios.length ? ratios : [10], (ratio) => ratio + ':1');
-
-            const previousHour = activeHours[idx];
-            activeHours = hours;
-            if (activeHours.length === 0) {
-                idx = 0;
-            } else {
-                const found = activeHours.indexOf(previousHour);
-                idx = found >= 0 ? found : 0;
-            }
-            sliderEl.max = String(Math.max(0, activeHours.length - 1));
-            sliderEl.value = String(idx);
+            syncProductScopedControls();
         }
 
         function viewportHeight() {
@@ -2630,7 +2897,7 @@ html_template = """
                 const isMobile = window.matchMedia('(max-width: 760px)').matches;
                 const mapTop = Math.max(0, Math.ceil(mapWrapEl.getBoundingClientRect().top));
                 const vh = Math.max(320, viewportHeight());
-                const edgeGap = isMobile ? 8 : 12;
+                const edgeGap = isMobile ? 14 : 12;
                 const minMapHeight = isMobile ? 160 : 220;
                 const targetHeight = Math.max(minMapHeight, vh - h - mapTop - edgeGap);
                 mapWrapEl.style.height = String(targetHeight) + 'px';
@@ -2654,6 +2921,10 @@ html_template = """
                 ratioEl.title = 'Snow ratio applies to snowfall accumulation maps only.';
             } else {
                 ratioEl.title = '';
+                const ratioOptions = getProductRatios(run, product);
+                if (ratioOptions.length && !ratioOptions.includes(Number(ratioEl.value))) {
+                    ratioEl.value = String(ratioOptions[0]);
+                }
             }
 
             const hour = activeHours[idx];
@@ -2680,14 +2951,21 @@ html_template = """
             syncRunScopedControls();
             render();
         });
-        productEl.addEventListener('change', render);
-        ratioEl.addEventListener('change', render);
+        productEl.addEventListener('change', () => {
+            syncProductScopedControls();
+            render();
+        });
+        ratioEl.addEventListener('change', () => {
+            syncProductScopedControls();
+            render();
+        });
         sliderEl.addEventListener('input', () => {
             idx = Number(sliderEl.value);
             render();
         });
         prevBtn.addEventListener('click', () => change(-1));
         nextBtn.addEventListener('click', () => change(1));
+        mapEl.addEventListener('load', syncBottomInset);
 
         setSelectOptions(runEl, runs.map((run) => run.id), (id) => {
             const run = runs.find((item) => String(item.id) === String(id));

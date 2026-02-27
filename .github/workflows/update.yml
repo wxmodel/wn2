@@ -142,6 +142,8 @@ jobs:
           fi
 
       - name: Run Map Generator
+        id: map_generator
+        continue-on-error: true
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
           EE_PROJECT: ${{ secrets.EE_PROJECT }}
@@ -165,7 +167,13 @@ jobs:
           WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_ne_zoom_snow_accum == 'true' && '1' || '') }}
         run: python main.py
 
+      - name: Report generator failure
+        if: ${{ steps.map_generator.outcome == 'failure' }}
+        run: |
+          echo "Map generator step failed; deploying retained/partial outputs from public/."
+
       - name: Deploy to GitHub Pages
+        if: ${{ always() }}
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
