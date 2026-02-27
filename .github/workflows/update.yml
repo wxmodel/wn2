@@ -4,12 +4,6 @@ on:
   push:
     branches:
       - main
-  schedule:
-    # Run 30 minutes after typical WN2 EE publish times
-    - cron: "0 2 * * *"   # after 18z cycle
-    - cron: "0 8 * * *"   # after 00z cycle
-    - cron: "0 14 * * *"  # after 06z cycle
-    - cron: "0 20 * * *"  # after 12z cycle
   workflow_dispatch:
     inputs:
       preview_one_frame:
