@@ -737,14 +737,15 @@ def get_hour_image(h):
 
 
 # --- 3. METEOROLOGY LOGIC ---
-def contour_overlay(field, interval, color, opacity=0.82, smooth_px=0, thicken_px=0, line_width_frac=0.055):
-    # Draw contour lines using distance-to-nearest multiple of interval (cheaper than neighborhood edge ops).
-    smoothed = field.resample('bilinear')
+def contour_overlay(field, interval, color, opacity=0.82, smooth_px=0, thicken_px=0, line_width_frac=0.016):
+    # Draw thin, crisp contour lines by finding narrow zero-crossings at integer contour levels.
+    smoothed = field.resample('nearest')
     if smooth_px and smooth_px > 0:
         smoothed = smoothed.focalMean(int(smooth_px), 'circle', 'pixels')
     scaled = smoothed.divide(float(interval))
     dist = scaled.subtract(scaled.round()).abs()
-    lines = dist.lte(float(line_width_frac))
+    width = max(0.006, min(0.030, float(line_width_frac)))
+    lines = dist.lte(width)
     if thicken_px and thicken_px > 0:
         lines = lines.focalMax(int(thicken_px))
     return lines.selfMask().visualize(palette=[color], opacity=opacity)
@@ -1576,19 +1577,19 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             contour_field,
             interval=minor_interval,
             color='#202020',
-            opacity=0.55,
+            opacity=0.38,
             smooth_px=0,
             thicken_px=0,
-            line_width_frac=0.050,
+            line_width_frac=0.010,
         )
         z500_major = contour_overlay(
             contour_field,
             interval=major_interval,
             color='#121212',
-            opacity=0.88,
+            opacity=0.92,
             smooth_px=0,
-            thicken_px=1,
-            line_width_frac=0.060,
+            thicken_px=0,
+            line_width_frac=0.016,
         )
         z540_contour = highlight_iso_overlay(
             contour_field,
