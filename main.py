@@ -2067,6 +2067,7 @@ def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg", require_variat
 cleanup_old_products()
 failures = []
 successful_exports = 0
+failed_product_keys = set()
 needs_snow_accum = any(k in SNOW_PRODUCT_KEYS for k, _, _ in ENABLED_PRODUCTS)
 snow_accum_by_hour = {}
 
@@ -2117,6 +2118,14 @@ def get_cached_hour_image(hour):
 def _record_task_failure(hour, name, err_msg, exc):
     print(f'[{ts()}] Hour {hour} product {name}: FAILED - {err_msg}')
     failures.append((f'{hour}:{name}', err_msg))
+    product_key = None
+    for key, _, _ in ENABLED_PRODUCTS:
+        if name == key or name.startswith(f'{key}_'):
+            product_key = key
+            break
+    if product_key is None:
+        product_key = name
+    failed_product_keys.add(product_key)
     if 'earthengine.thumbnails.create' in err_msg:
         raise RuntimeError(
             "Earth Engine permission denied: earthengine.thumbnails.create. "
@@ -2223,6 +2232,13 @@ if failures:
 
 if successful_exports > 0:
     for key, _, pattern in ENABLED_PRODUCTS:
+        product_files = sorted(Path(RUN_OUTPUT_DIR).glob(pattern))
+        if not product_files:
+            if key in failed_product_keys:
+                print(f'[{ts()}] Skipping sanity check for {key}: no frames generated after render failures.')
+            else:
+                print(f'[{ts()}] Skipping sanity check for {key}: no frames generated this run.')
+            continue
         sanity_check_jpgs(
             str(RUN_OUTPUT_DIR),
             pattern=pattern,
