@@ -212,6 +212,8 @@ run_conus_vort500_env = os.environ.get('WN2_RUN_CONUS_VORT500')
 run_conus_snow_accum_env = os.environ.get('WN2_RUN_CONUS_SNOW_ACCUM')
 run_ne_snow_accum_env = os.environ.get('WN2_RUN_NE_SNOW_ACCUM')
 run_ne_zoom_snow_accum_env = os.environ.get('WN2_RUN_NE_ZOOM_SNOW_ACCUM')
+run_conus_t2m_env = os.environ.get('WN2_RUN_CONUS_T2M')
+run_conus_t2m_anom_env = os.environ.get('WN2_RUN_CONUS_T2M_ANOM')
 
 
 def _env_flag(raw, default=False):
@@ -317,12 +319,32 @@ SNOW_ACCUM_STEP_SEGMENTS_IN = [
 ]
 SNOW_ACCUM_MAX_IN = 32.0
 SNOW_ACCUM_OVER_COLOR = '#d60000'
+T2M_F_PALETTE = [
+    '#5a168a', '#3344b2', '#2f75d6', '#55a7eb', '#8fd1f4', '#cce8fa',
+    '#f1f3ef',
+    '#f7e5a3', '#f8cc72', '#f3a14f', '#ea6f3b', '#d33e2e', '#9e1f1f'
+]
+T2M_ANOM_F_PALETTE = [
+    '#6f00a8', '#4b3fcb', '#2f73e0', '#58adef', '#9ad7f7',
+    '#e6e8ea',
+    '#f4e58c', '#f4c264', '#ef9849', '#e46535', '#ca2f24', '#8e1313'
+]
+T2M_F_MIN = -20.0
+T2M_F_MAX = 110.0
+T2M_ANOM_F_MIN = -40.0
+T2M_ANOM_F_MAX = 40.0
 CLIMO_H500_COLLECTION = (
     ee.ImageCollection(CLIMO_ASSET)
     .select(CLIMO_H500_BAND)
     .filter(ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year'))
 )
 CLIMO_H500_CACHE = {}
+CLIMO_T2M_COLLECTION = (
+    ee.ImageCollection(CLIMO_ASSET)
+    .select('T2M')
+    .filter(ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year'))
+)
+CLIMO_T2M_CACHE = {}
 
 PRODUCT_OPTIONS = [
     ('nh_z500a', 'NH 500mb Height Anomaly', 'nh_z500a_*.jpg', run_nh_z500a_env),
@@ -330,6 +352,8 @@ PRODUCT_OPTIONS = [
     ('conus_mslp_ptype', 'CONUS MSLP + P-Type', 'conus_mslp_ptype_*.jpg', run_conus_mslp_ptype_env),
     ('ne_mslp_ptype', 'Northeast MSLP + P-Type', 'ne_mslp_ptype_*.jpg', run_ne_mslp_ptype_env),
     ('conus_vort500', 'CONUS 500mb Vorticity', 'conus_vort500_*.jpg', run_conus_vort500_env),
+    ('conus_t2m', 'USA Region 2m Temperature', 'conus_t2m_*.jpg', run_conus_t2m_env),
+    ('conus_t2m_anom', 'USA Region 2m Temperature Anomaly', 'conus_t2m_anom_*.jpg', run_conus_t2m_anom_env),
     ('conus_snow_accum', 'CONUS Snowfall Accumulation', 'conus_snow_accum_*.jpg', run_conus_snow_accum_env),
     ('ne_snow_accum', 'Northeast Snowfall Accumulation', 'ne_snow_accum_*.jpg', run_ne_snow_accum_env),
     ('ne_zoom_snow_accum', 'New England Zoom Snowfall Accumulation', 'ne_zoom_snow_accum_*.jpg', run_ne_zoom_snow_accum_env),
@@ -358,6 +382,8 @@ def cleanup_old_products():
         'conus_mslp_ptype_*.jpg',
         'ne_mslp_ptype_*.jpg',
         'conus_vort500_*.jpg',
+        'conus_t2m_*.jpg',
+        'conus_t2m_anom_*.jpg',
         'conus_snow_accum_*.jpg',
         'ne_snow_accum_*.jpg',
         'ne_zoom_snow_accum_*.jpg',
@@ -819,6 +845,45 @@ def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global'):
     return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
 
 
+def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global'):
+    doy = valid_utc.timetuple().tm_yday
+    hour = int(valid_utc.hour)
+    cache_key = (doy, hour, cache_tag)
+    cached = CLIMO_T2M_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    start_doy = doy - CLIMO_DOY_WINDOW_DAYS
+    end_doy = doy + CLIMO_DOY_WINDOW_DAYS
+    hour_collection = CLIMO_T2M_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
+    fallback_collection = CLIMO_T2M_COLLECTION.filter(
+        ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+    ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    climo_k = ee.Image(
+        ee.Algorithms.If(
+            window_collection.size().gt(0),
+            window_collection.mean(),
+            fallback_collection.mean(),
+        )
+    ).rename('t2m_climo_k').resample('bilinear')
+    climo_c = climo_k.subtract(273.15).rename('t2m_climo_c')
+    if region_geom is not None:
+        climo_c = climo_c.clip(region_geom)
+    CLIMO_T2M_CACHE[cache_key] = climo_c
+    return climo_c
+
+
+def t2m_anomaly_c(img, hour, region_geom=None, cache_tag='global'):
+    valid_utc = RUN_INIT_UTC + timedelta(hours=int(hour))
+    forecast_t2m_c = img.select(WN2_T2M_BAND).subtract(273.15)
+    climo_t2m_c = t2m_climo_1991_2020_c(valid_utc, region_geom=region_geom, cache_tag=cache_tag)
+    if region_geom is not None:
+        forecast_t2m_c = forecast_t2m_c.clip(region_geom)
+        climo_t2m_c = climo_t2m_c.clip(region_geom)
+    return forecast_t2m_c.subtract(climo_t2m_c).rename('t2m_anomaly_c')
+
+
 def shrink_dimensions(dimensions):
     if isinstance(dimensions, int):
         return max(500, int(dimensions * 0.82))
@@ -1057,6 +1122,20 @@ def _draw_legend(draw, product_key, width, y, snow_ratio=10):
         _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48], 4, 50, tick_font)
         return
 
+    if product_key == 'conus_t2m':
+        _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
+        draw.text((bar_x, y + 2), '2m Temperature (degF) | USA Region (CONUS)', fill=(22, 22, 22), font=label_font)
+        _draw_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, T2M_F_PALETTE)
+        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [-20, 0, 10, 20, 32, 40, 50, 60, 70, 80, 90, 100, 110], T2M_F_MIN, T2M_F_MAX, tick_font)
+        return
+
+    if product_key == 'conus_t2m_anom':
+        _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
+        draw.text((bar_x, y + 2), '2m Temperature Anomaly (degF) vs 1991-2020 | USA Region (CONUS)', fill=(22, 22, 22), font=label_font)
+        _draw_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, T2M_ANOM_F_PALETTE)
+        _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [-40, -30, -20, -10, 0, 10, 20, 30, 40], T2M_ANOM_F_MIN, T2M_ANOM_F_MAX, tick_font)
+        return
+
     if product_key in ('conus_snow_accum', 'ne_snow_accum', 'ne_zoom_snow_accum'):
         _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
         draw.text((bar_x, y + 2), f'Accumulated Snowfall Total (in, {int(snow_ratio)}:1 ratio)', fill=(22, 22, 22), font=label_font)
@@ -1143,6 +1222,8 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
         'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | CONUS',
         'ne_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | Northeast',
         'conus_vort500': 'WN2 0.25 deg | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
+        'conus_t2m': 'WN2 0.25 deg | 2m Temperature (degF) | USA Region (CONUS)',
+        'conus_t2m_anom': 'WN2 0.25 deg | 2m Temperature Anomaly (degF) vs 1991-2020 | USA Region (CONUS)',
         'conus_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | CONUS',
         'ne_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | Northeast',
         'ne_zoom_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | New England Zoom',
@@ -1231,7 +1312,16 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
         legend_h = 0
         if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
             legend_h = 180
-        elif product_key in ('nh_z500a', 'na_z500a', 'conus_vort500', 'conus_snow_accum', 'ne_snow_accum', 'ne_zoom_snow_accum'):
+        elif product_key in (
+            'nh_z500a',
+            'na_z500a',
+            'conus_vort500',
+            'conus_t2m',
+            'conus_t2m_anom',
+            'conus_snow_accum',
+            'ne_snow_accum',
+            'ne_zoom_snow_accum',
+        ):
             legend_h = 96
 
         header_h = 78
@@ -1815,6 +1905,92 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
     annotate_map_file(out_file, key, h, map_region=region, snow_labels=snow_labels, snow_ratio=snow_ratio)
 
 
+def generate_conus_t2m_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m'):
+    region_geom = ee.Geometry.Rectangle(region, geodesic=False)
+    t2m_f = (
+        img.select(WN2_T2M_BAND)
+        .subtract(273.15)
+        .multiply(9.0 / 5.0)
+        .add(32.0)
+        .clip(region_geom)
+    )
+    t2m_vis = t2m_f.resample('bilinear').focalMean(1, 'circle', 'pixels')
+    t2m_layer = t2m_vis.visualize(min=T2M_F_MIN, max=T2M_F_MAX, palette=T2M_F_PALETTE)
+    t2m_contours = contour_overlay(
+        t2m_vis,
+        interval=8,
+        color='#2a2a2a',
+        opacity=0.62,
+        smooth_px=0,
+        thicken_px=0,
+    )
+    freezing_line = highlight_iso_overlay(
+        t2m_vis,
+        level=32,
+        color='#2455ff',
+        opacity=0.88,
+        tolerance=0.9,
+        smooth_px=0,
+    )
+    composite = ee.ImageCollection([
+        basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
+        t2m_layer,
+        t2m_contours,
+        freezing_line,
+        border_overlay(include_states=True),
+    ]).mosaic()
+    out_file = build_frame_path(key, h)
+    dims = region_dimensions(CONUS_DIMS, region)
+    export_composite(composite, out_file, region, dimensions=dims)
+    annotate_map_file(out_file, key, h)
+
+
+def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m_anom'):
+    region_geom = ee.Geometry.Rectangle(region, geodesic=False)
+    t2m_anom_c = t2m_anomaly_c(img, h, region_geom=region_geom, cache_tag=key)
+    t2m_anom_f = t2m_anom_c.multiply(9.0 / 5.0).rename('t2m_anomaly_f')
+    t2m_anom_vis = t2m_anom_f.resample('bilinear').focalMean(1, 'circle', 'pixels')
+    t2m_anom_layer = t2m_anom_vis.visualize(
+        min=T2M_ANOM_F_MIN,
+        max=T2M_ANOM_F_MAX,
+        palette=T2M_ANOM_F_PALETTE,
+    )
+    t2m_f = (
+        img.select(WN2_T2M_BAND)
+        .subtract(273.15)
+        .multiply(9.0 / 5.0)
+        .add(32.0)
+        .clip(region_geom)
+    )
+    temp_contours = contour_overlay(
+        t2m_f,
+        interval=10,
+        color='#2d2d2d',
+        opacity=0.50,
+        smooth_px=0,
+        thicken_px=0,
+    )
+    freezing_line = highlight_iso_overlay(
+        t2m_f,
+        level=32,
+        color='#2455ff',
+        opacity=0.90,
+        tolerance=1.0,
+        smooth_px=0,
+    )
+    composite = ee.ImageCollection([
+        basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
+        t2m_anom_layer,
+        temp_contours,
+        freezing_line,
+        border_overlay(include_states=True),
+    ]).mosaic()
+    out_file = build_frame_path(key, h)
+    dims = region_dimensions(CONUS_DIMS, region)
+    export_composite(composite, out_file, region, dimensions=dims)
+    annotate_map_file(out_file, key, h)
+
+
 def generate_vort500_map(img, h):
     region_geom = ee.Geometry.Rectangle(CONUS_THUMB_REGION, geodesic=False)
     u = img.select(WN2_500_U_BAND).resample('bilinear').focalMean(2, 'circle', 'pixels')
@@ -1974,6 +2150,10 @@ if non_z500_enabled:
             tasks.append(('ne_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, NE_THUMB_REGION, 'ne_mslp_ptype')))
         if 'conus_vort500' in enabled_keys:
             tasks.append(('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)))
+        if 'conus_t2m' in enabled_keys:
+            tasks.append(('conus_t2m', lambda i=img, hh=h: generate_conus_t2m_map(i, hh, CONUS_THUMB_REGION, 'conus_t2m')))
+        if 'conus_t2m_anom' in enabled_keys:
+            tasks.append(('conus_t2m_anom', lambda i=img, hh=h: generate_conus_t2m_anomaly_map(i, hh, CONUS_THUMB_REGION, 'conus_t2m_anom')))
         if 'conus_snow_accum' in enabled_keys:
             for ratio in SNOW_RATIOS:
                 tasks.append((

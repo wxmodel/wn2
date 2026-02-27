@@ -70,6 +70,16 @@ on:
         required: false
         default: true
         type: boolean
+      run_conus_t2m:
+        description: "Generate USA region 2m temperature"
+        required: false
+        default: true
+        type: boolean
+      run_conus_t2m_anom:
+        description: "Generate USA region 2m temperature anomaly"
+        required: false
+        default: true
+        type: boolean
       run_conus_snow_accum:
         description: "Generate CONUS snowfall accumulation"
         required: false
@@ -148,6 +158,8 @@ jobs:
           WN2_RUN_CONUS_MSLP_PTYPE: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_conus_mslp_ptype == 'true' && '1' || '') }}
           WN2_RUN_NE_MSLP_PTYPE: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_ne_mslp_ptype == 'true' && '1' || '') }}
           WN2_RUN_CONUS_VORT500: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_conus_vort500 == 'true' && '1' || '') }}
+          WN2_RUN_CONUS_T2M: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_conus_t2m == 'true' && '1' || '') }}
+          WN2_RUN_CONUS_T2M_ANOM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_conus_t2m_anom == 'true' && '1' || '') }}
           WN2_RUN_CONUS_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_conus_snow_accum == 'true' && '1' || '') }}
           WN2_RUN_NE_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_ne_snow_accum == 'true' && '1' || '') }}
           WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.run_ne_zoom_snow_accum == 'true' && '1' || '') }}
