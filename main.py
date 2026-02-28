@@ -859,10 +859,8 @@ def _coarsen_for_compute(image, scale_m, min_scale_m):
     img = ee.Image(image).toFloat()
     if scale_m is None:
         return img
-    work_scale = int(max(float(min_scale_m), float(scale_m)))
-    # reduceResolution is brittle on some derived images (missing default projection);
-    # use explicit reprojection instead for predictable low-memory behavior.
-    return img.resample('bilinear').reproject(crs=TARGET_CRS, scale=work_scale)
+    # Keep compute graph lightweight; output scale is controlled at export time.
+    return img.resample('bilinear')
 
 
 def _wrap_day_of_year_filter(start_doy, end_doy):
