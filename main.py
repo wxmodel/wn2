@@ -446,9 +446,11 @@ def download_thumb(ee_image, out_path, vis_params):
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     url = ee_image.getThumbURL(vis_params)
     last_error = None
-    for attempt in range(1, 4):
+    max_attempts = 2
+    request_timeout_s = 120
+    for attempt in range(1, max_attempts + 1):
         try:
-            with requests.get(url, stream=True, timeout=300) as response:
+            with requests.get(url, stream=True, timeout=request_timeout_s) as response:
                 if response.status_code != 200:
                     body = response.text[:500]
                     print(f'[{ts()}] Thumbnail download failed: status={response.status_code}, body={body}')
@@ -471,9 +473,12 @@ def download_thumb(ee_image, out_path, vis_params):
                 or 'Connection aborted' in msg
                 or 'Read timed out' in msg
             )
-            if transient and attempt < 3:
+            if transient and attempt < max_attempts:
                 wait_s = attempt * 3
-                print(f'[{ts()}] Retry {attempt}/2 for {out_path} after transient error: {msg}')
+                print(
+                    f'[{ts()}] Retry {attempt}/{max_attempts - 1} for {out_path} '
+                    f'after transient error: {msg}'
+                )
                 time.sleep(wait_s)
                 continue
             print(f'[{ts()}] Thumbnail download error for {out_path}: {e}')
