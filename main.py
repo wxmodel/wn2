@@ -244,6 +244,9 @@ if FAST_RENDER:
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
     ANOMALY_WORK_SCALE_M = 180000
+    Z500_NH_ANOM_SCALES_M = [100000, 140000, 190000]
+    Z500_NA_ANOM_SCALES_M = [80000, 115000, 155000]
+    T2M_ANOM_WORK_SCALES_M = [32000, 46000, 62000]
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -257,6 +260,9 @@ else:
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
     ANOMALY_WORK_SCALE_M = 200000
+    Z500_NH_ANOM_SCALES_M = [90000, 125000, 170000]
+    Z500_NA_ANOM_SCALES_M = [70000, 100000, 140000]
+    T2M_ANOM_WORK_SCALES_M = [28000, 42000, 56000]
 
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
@@ -838,6 +844,12 @@ def pseudo_z500_anomaly_m(height_dam, radius_px=20):
     return height_dam.subtract(broad).multiply(10).rename('z500_pseudo_anomaly_m')
 
 
+def _clip_collection_to_region(collection, region_geom):
+    if region_geom is None:
+        return collection
+    return ee.ImageCollection(collection.map(lambda im: ee.Image(im).clip(region_geom)))
+
+
 def _wrap_day_of_year_filter(start_doy, end_doy):
     if start_doy >= 1 and end_doy <= 366:
         return ee.Filter.calendarRange(start_doy, end_doy, 'day_of_year')
@@ -863,10 +875,12 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global'):
     start_doy = doy - CLIMO_DOY_WINDOW_DAYS
     end_doy = doy + CLIMO_DOY_WINDOW_DAYS
     hour_collection = CLIMO_H500_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
     fallback_collection = CLIMO_H500_COLLECTION.filter(
         ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
     climo = ee.Image(
         ee.Algorithms.If(
             window_collection.size().gt(0),
@@ -901,10 +915,12 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global'):
     start_doy = doy - CLIMO_DOY_WINDOW_DAYS
     end_doy = doy + CLIMO_DOY_WINDOW_DAYS
     hour_collection = CLIMO_T2M_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
     fallback_collection = CLIMO_T2M_COLLECTION.filter(
         ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
     climo_k = ee.Image(
         ee.Algorithms.If(
             window_collection.size().gt(0),
@@ -1604,21 +1620,35 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         map_dims = region_dimensions(ANOMALY_DIMS, region)
 
     forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
-    contour_field = forecast_height_dam.reproject(crs=TARGET_CRS, scale=ANOMALY_WORK_SCALE_M)
+    contour_field = forecast_height_dam
 
-    def _build_composite(anomaly_field, minor_interval=Z500_MINOR_CONTOUR_INTERVAL, major_interval=Z500_MAJOR_CONTOUR_INTERVAL):
-        anomaly_layer = anomaly_overlay(anomaly_field)
-        z500_minor = contour_overlay(
-            contour_field,
-            interval=minor_interval,
-            color='#202020',
-            opacity=0.38,
-            smooth_px=0,
-            thicken_px=0,
-            line_width_frac=0.010,
-        )
+    def _build_composite(
+        anomaly_field,
+        anomaly_scale_m,
+        contour_scale_m,
+        minor_interval=Z500_MINOR_CONTOUR_INTERVAL,
+        major_interval=Z500_MAJOR_CONTOUR_INTERVAL,
+    ):
+        anomaly_for_render = anomaly_field.reproject(crs=TARGET_CRS, scale=int(anomaly_scale_m))
+        contour_for_render = contour_field.reproject(crs=TARGET_CRS, scale=int(contour_scale_m))
+        anomaly_layer = anomaly_overlay(anomaly_for_render)
+        overlays = [
+            basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
+            anomaly_layer,
+        ]
+        if minor_interval and int(minor_interval) < int(major_interval):
+            z500_minor = contour_overlay(
+                contour_for_render,
+                interval=minor_interval,
+                color='#202020',
+                opacity=0.38,
+                smooth_px=0,
+                thicken_px=0,
+                line_width_frac=0.010,
+            )
+            overlays.append(z500_minor)
         z500_major = contour_overlay(
-            contour_field,
+            contour_for_render,
             interval=major_interval,
             color='#121212',
             opacity=0.92,
@@ -1627,28 +1657,27 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             line_width_frac=0.016,
         )
         z540_contour = highlight_iso_overlay(
-            contour_field,
+            contour_for_render,
             level=540,
             color='#2455ff',
             opacity=0.92,
             tolerance=1.0,
             smooth_px=0,
         )
-        overlays = [
-            basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
-            anomaly_layer,
-            z500_minor,
-            z500_major,
-            z540_contour,
-            border_overlay(
-                include_states=False,
-                region_geom=region_geom,
-                detailed=(prefix != 'nh_z500a'),
-            ),
-        ]
+        overlays.extend(
+            [
+                z500_major,
+                z540_contour,
+                border_overlay(
+                    include_states=False,
+                    region_geom=region_geom,
+                    detailed=(prefix not in ('nh_z500a', 'na_z500a')),
+                ),
+            ]
+        )
         return ee.ImageCollection(overlays).mosaic()
 
-    def _export_and_annotate(composite_image, use_scale=True, dims_override=None):
+    def _export_and_annotate(composite_image, use_scale=True, dims_override=None, scale_override=None):
         out_file = build_frame_path(prefix, h)
         if prefix == 'nh_z500a':
             nh_dims = dims_override if dims_override is not None else (map_dims if use_scale else shrink_dimensions(map_dims))
@@ -1667,7 +1696,7 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             out_file,
             region,
             dimensions=export_dims,
-            scale=(ANOMALY_NA_SCALE_M if use_scale else None),
+            scale=((scale_override if scale_override is not None else ANOMALY_NA_SCALE_M) if use_scale else None),
         )
         annotate_map_file(out_file, prefix, h)
 
@@ -1683,10 +1712,13 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     if prefix == 'nh_z500a':
         mid_dims = shrink_dimensions(map_dims)
         low_dims = shrink_dimensions(mid_dims)
+        contour_scale_base = int(ANOMALY_WORK_SCALE_M)
         plans = [
             {
                 'use_scale': True,
                 'dims': map_dims,
+                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[0],
+                'contour_scale_m': contour_scale_base,
                 'minor_interval': Z500_MINOR_CONTOUR_INTERVAL,
                 'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
                 'label': 'split full dims + major/minor contours',
@@ -1694,6 +1726,8 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             {
                 'use_scale': True,
                 'dims': mid_dims,
+                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[1],
+                'contour_scale_m': int(contour_scale_base * 1.2),
                 'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
                 'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
                 'label': 'split mid dims + major contours',
@@ -1701,34 +1735,45 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             {
                 'use_scale': True,
                 'dims': low_dims,
-                'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
+                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[2],
+                'contour_scale_m': int(contour_scale_base * 1.45),
+                'minor_interval': 18,
                 'major_interval': 18,
                 'label': 'split low dims + sparse contours',
             },
         ]
     else:
         mid_dims = shrink_dimensions(map_dims)
+        low_dims = shrink_dimensions(mid_dims)
+        contour_scale_base = int(ANOMALY_WORK_SCALE_M)
         plans = [
-            {
-                'use_scale': True,
-                'dims': map_dims,
-                'minor_interval': Z500_MINOR_CONTOUR_INTERVAL,
-                'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
-                'label': 'scale + major/minor contours',
-            },
             {
                 'use_scale': False,
                 'dims': map_dims,
+                'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[0],
+                'contour_scale_m': int(contour_scale_base * 0.9),
                 'minor_interval': Z500_MINOR_CONTOUR_INTERVAL,
                 'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
-                'label': 'dims + major/minor contours',
+                'label': 'dims full + major/minor contours',
             },
             {
                 'use_scale': False,
                 'dims': mid_dims,
+                'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[1],
+                'contour_scale_m': contour_scale_base,
                 'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
                 'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
                 'label': 'dims reduced + major contours',
+            },
+            {
+                'use_scale': True,
+                'dims': low_dims,
+                'scale_m': int(ANOMALY_NA_SCALE_M * 1.55),
+                'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[2],
+                'contour_scale_m': int(contour_scale_base * 1.35),
+                'minor_interval': 18,
+                'major_interval': 18,
+                'label': 'scale coarse + sparse contours',
             },
         ]
 
@@ -1738,11 +1783,14 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             _export_and_annotate(
                 _build_composite(
                     true_anomaly,
+                    anomaly_scale_m=plan['anomaly_scale_m'],
+                    contour_scale_m=plan['contour_scale_m'],
                     minor_interval=plan['minor_interval'],
                     major_interval=plan['major_interval'],
                 ),
                 use_scale=plan['use_scale'],
                 dims_override=plan['dims'],
+                scale_override=plan.get('scale_m'),
             )
             return
         except Exception as e:
@@ -2074,12 +2122,6 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
     region_geom = ee.Geometry.Rectangle(region, geodesic=False)
     t2m_anom_c = t2m_anomaly_c(img, h, region_geom=region_geom, cache_tag=key)
     t2m_anom_f = t2m_anom_c.multiply(9.0 / 5.0).rename('t2m_anomaly_f')
-    t2m_anom_vis = t2m_anom_f.resample('bilinear').focalMean(1, 'circle', 'pixels')
-    t2m_anom_layer = t2m_anom_vis.visualize(
-        min=T2M_ANOM_F_MIN,
-        max=T2M_ANOM_F_MAX,
-        palette=T2M_ANOM_F_PALETTE,
-    )
     t2m_f = (
         img.select(WN2_T2M_BAND)
         .subtract(273.15)
@@ -2087,33 +2129,76 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
         .add(32.0)
         .clip(region_geom)
     )
-    temp_contours = contour_overlay(
-        t2m_f,
-        interval=10,
-        color='#2d2d2d',
-        opacity=0.50,
-        smooth_px=0,
-        thicken_px=0,
-    )
-    freezing_line = highlight_iso_overlay(
-        t2m_f,
-        level=32,
-        color='#2455ff',
-        opacity=0.90,
-        tolerance=1.0,
-        smooth_px=0,
-    )
-    composite = ee.ImageCollection([
-        basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
-        t2m_anom_layer,
-        temp_contours,
-        freezing_line,
-        border_overlay(include_states=True),
-    ]).mosaic()
+    base_dims = region_dimensions(CONUS_DIMS, region)
+    mid_dims = shrink_dimensions(base_dims)
+    low_dims = shrink_dimensions(mid_dims)
+    plans = [
+        {'dims': base_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[0], 'contour_interval': 10, 'label': 'full dims + 10F contours'},
+        {'dims': mid_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[1], 'contour_interval': 12, 'label': 'mid dims + 12F contours'},
+        {'dims': low_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[2], 'contour_interval': 16, 'label': 'low dims + sparse contours'},
+    ]
+
+    def _build_composite(work_scale_m, contour_interval):
+        anom_field = t2m_anom_f.reproject(crs=TARGET_CRS, scale=int(work_scale_m))
+        contour_field = t2m_f.reproject(crs=TARGET_CRS, scale=int(max(work_scale_m, 28000)))
+        t2m_anom_vis = anom_field.resample('bilinear').focalMean(1, 'circle', 'pixels')
+        t2m_anom_layer = t2m_anom_vis.visualize(
+            min=T2M_ANOM_F_MIN,
+            max=T2M_ANOM_F_MAX,
+            palette=T2M_ANOM_F_PALETTE,
+        )
+        temp_contours = contour_overlay(
+            contour_field,
+            interval=int(contour_interval),
+            color='#2d2d2d',
+            opacity=0.50,
+            smooth_px=0,
+            thicken_px=0,
+        )
+        freezing_line = highlight_iso_overlay(
+            contour_field,
+            level=32,
+            color='#2455ff',
+            opacity=0.90,
+            tolerance=1.0,
+            smooth_px=0,
+        )
+        return ee.ImageCollection([
+            basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
+            t2m_anom_layer,
+            temp_contours,
+            freezing_line,
+            border_overlay(include_states=True),
+        ]).mosaic()
+
+    def _is_recoverable_export_error(msg):
+        return (
+            'User memory limit exceeded' in msg
+            or 'Unable to transform edge' in msg
+            or 'Invalid argument' in msg
+            or 'INVALID_ARGUMENT' in msg
+        )
+
     out_file = build_frame_path(key, h)
-    dims = region_dimensions(CONUS_DIMS, region)
-    export_composite(composite, out_file, region, dimensions=dims)
-    annotate_map_file(out_file, key, h)
+    last_msg = ''
+    for plan in plans:
+        try:
+            composite = _build_composite(
+                work_scale_m=plan['work_scale_m'],
+                contour_interval=plan['contour_interval'],
+            )
+            export_composite(composite, out_file, region, dimensions=plan['dims'])
+            annotate_map_file(out_file, key, h)
+            return
+        except Exception as e:
+            msg = str(e)
+            if not _is_recoverable_export_error(msg):
+                raise
+            last_msg = msg
+            print(f'[{ts()}] {key} hour {h}: anomaly export retry failed ({plan["label"]}).')
+
+    short_msg = (last_msg or 'Unknown export error').replace('\n', ' ')[:220]
+    raise RuntimeError(f'{key} hour {h}: true-anomaly export failed after retries. Last error: {short_msg}')
 
 
 def generate_vort500_map(img, h):
