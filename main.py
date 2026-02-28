@@ -942,7 +942,10 @@ def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global', analysis_sca
     else:
         forecast_height_m = forecast_height_m.toFloat()
         climo_height_m = climo_height_m.toFloat()
-    return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
+    # Integer-space subtraction lowers EE memory while preserving true anomalies.
+    forecast_dm = forecast_height_m.divide(10.0).round().toInt16()
+    climo_dm = climo_height_m.divide(10.0).round().toInt16()
+    return forecast_dm.subtract(climo_dm).multiply(10.0).toFloat().rename('z500_anomaly_m')
 
 
 def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analysis_scale_m=None):
@@ -1013,7 +1016,9 @@ def t2m_anomaly_c(img, hour, region_geom=None, cache_tag='global', analysis_scal
     else:
         forecast_t2m_c = forecast_t2m_c.toFloat()
         climo_t2m_c = climo_t2m_c.toFloat()
-    return forecast_t2m_c.subtract(climo_t2m_c).rename('t2m_anomaly_c')
+    forecast_tc10 = forecast_t2m_c.multiply(10.0).round().toInt16()
+    climo_tc10 = climo_t2m_c.multiply(10.0).round().toInt16()
+    return forecast_tc10.subtract(climo_tc10).divide(10.0).toFloat().rename('t2m_anomaly_c')
 
 
 def shrink_dimensions(dimensions):
