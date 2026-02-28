@@ -243,10 +243,10 @@ if FAST_RENDER:
     NH_POLAR_DIMS = 980
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
-    ANOMALY_WORK_SCALE_M = 180000
-    Z500_NH_ANOM_SCALES_M = [180000, 260000, 360000]
-    Z500_NA_ANOM_SCALES_M = [140000, 220000, 300000]
-    T2M_ANOM_WORK_SCALES_M = [50000, 75000, 110000]
+    ANOMALY_WORK_SCALE_M = 220000
+    Z500_NH_ANOM_SCALES_M = [260000, 360000, 480000]
+    Z500_NA_ANOM_SCALES_M = [200000, 300000, 420000]
+    T2M_ANOM_WORK_SCALES_M = [70000, 110000, 150000]
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -259,10 +259,10 @@ else:
     NH_POLAR_DIMS = 1080
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
-    ANOMALY_WORK_SCALE_M = 200000
-    Z500_NH_ANOM_SCALES_M = [170000, 240000, 330000]
-    Z500_NA_ANOM_SCALES_M = [130000, 200000, 280000]
-    T2M_ANOM_WORK_SCALES_M = [45000, 70000, 100000]
+    ANOMALY_WORK_SCALE_M = 240000
+    Z500_NH_ANOM_SCALES_M = [240000, 340000, 460000]
+    Z500_NA_ANOM_SCALES_M = [180000, 280000, 380000]
+    T2M_ANOM_WORK_SCALES_M = [65000, 100000, 140000]
 
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
@@ -778,14 +778,14 @@ def get_hour_image(h):
 
 
 # --- 3. METEOROLOGY LOGIC ---
-def contour_overlay(field, interval, color, opacity=0.82, smooth_px=0, thicken_px=0, line_width_frac=0.016):
+def contour_overlay(field, interval, color, opacity=0.82, smooth_px=0, thicken_px=0, line_width_frac=0.010):
     # Draw thin, crisp contour lines by finding narrow zero-crossings at integer contour levels.
     smoothed = field.resample('bilinear')
     if smooth_px and smooth_px > 0:
         smoothed = smoothed.focalMean(int(smooth_px), 'circle', 'pixels')
     scaled = smoothed.divide(float(interval))
     dist = scaled.subtract(scaled.round()).abs()
-    width = max(0.006, min(0.030, float(line_width_frac)))
+    width = max(0.004, min(0.020, float(line_width_frac)))
     lines = dist.lte(width)
     if thicken_px and thicken_px > 0:
         lines = lines.focalMax(int(thicken_px))
@@ -824,6 +824,10 @@ def basemap_overlay(region_geom, land_color='#ececec', ocean_color='#cfe0ea', la
     return ee.ImageCollection([ocean, land]).mosaic()
 
 
+def flat_background_overlay(region_geom, color='#cfe0ea'):
+    return ee.Image.constant(1).clip(region_geom).visualize(palette=[color], opacity=1.0)
+
+
 def anomaly_overlay(anomaly_field):
     # Apply mild smoothing + gain for a cleaner, less noisy anomaly presentation.
     anomaly_vis = anomaly_field.resample('bilinear')
@@ -850,6 +854,18 @@ def _clip_collection_to_region(collection, region_geom):
     return ee.ImageCollection(collection.map(lambda im: ee.Image(im).clip(region_geom)))
 
 
+def _coarsen_for_compute(image, scale_m, min_scale_m):
+    if scale_m is None:
+        return ee.Image(image).toFloat()
+    work_scale = int(max(float(min_scale_m), float(scale_m)))
+    return (
+        ee.Image(image)
+        .toFloat()
+        .reduceResolution(reducer=ee.Reducer.mean(), bestEffort=True, maxPixels=1024)
+        .reproject(crs=TARGET_CRS, scale=work_scale)
+    )
+
+
 def _wrap_day_of_year_filter(start_doy, end_doy):
     if start_doy >= 1 and end_doy <= 366:
         return ee.Filter.calendarRange(start_doy, end_doy, 'day_of_year')
@@ -864,10 +880,11 @@ def _wrap_day_of_year_filter(start_doy, end_doy):
     )
 
 
-def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global'):
+def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global', analysis_scale_m=None):
     doy = valid_utc.timetuple().tm_yday
     hour = int(valid_utc.hour)
-    cache_key = (doy, hour, cache_tag)
+    scale_key = int(max(25000, float(analysis_scale_m))) if analysis_scale_m is not None else None
+    cache_key = (doy, hour, cache_tag, scale_key)
     cached = CLIMO_H500_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -888,6 +905,8 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global'):
             fallback_collection.mean(),
         )
     ).rename('z500_climo_m').resample('bilinear')
+    if analysis_scale_m is not None:
+        climo = _coarsen_for_compute(climo, analysis_scale_m, min_scale_m=25000)
     CLIMO_H500_CACHE[cache_key] = climo
     return climo
 
@@ -895,23 +914,29 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global'):
 def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global', analysis_scale_m=None):
     valid_utc = RUN_INIT_UTC + timedelta(hours=int(hour))
     forecast_height_m = img.select(WN2_Z500_BAND).divide(9.80665)
-    climo_height_m = z500_climo_1991_2020_m(valid_utc, region_geom=region_geom, cache_tag=cache_tag)
+    climo_height_m = z500_climo_1991_2020_m(
+        valid_utc,
+        region_geom=region_geom,
+        cache_tag=cache_tag,
+        analysis_scale_m=analysis_scale_m,
+    )
     if region_geom is not None:
         forecast_height_m = forecast_height_m.clip(region_geom)
         climo_height_m = climo_height_m.clip(region_geom)
-    forecast_height_m = forecast_height_m.resample('bilinear')
-    climo_height_m = climo_height_m.resample('bilinear')
     if analysis_scale_m is not None:
-        work_scale = int(max(25000, float(analysis_scale_m)))
-        forecast_height_m = forecast_height_m.reproject(crs=TARGET_CRS, scale=work_scale)
-        climo_height_m = climo_height_m.reproject(crs=TARGET_CRS, scale=work_scale)
+        forecast_height_m = _coarsen_for_compute(forecast_height_m, analysis_scale_m, min_scale_m=25000)
+        climo_height_m = _coarsen_for_compute(climo_height_m, analysis_scale_m, min_scale_m=25000)
+    else:
+        forecast_height_m = forecast_height_m.toFloat()
+        climo_height_m = climo_height_m.toFloat()
     return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
 
 
-def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global'):
+def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analysis_scale_m=None):
     doy = valid_utc.timetuple().tm_yday
     hour = int(valid_utc.hour)
-    cache_key = (doy, hour, cache_tag)
+    scale_key = int(max(15000, float(analysis_scale_m))) if analysis_scale_m is not None else None
+    cache_key = (doy, hour, cache_tag, scale_key)
     cached = CLIMO_T2M_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -932,6 +957,8 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global'):
             fallback_collection.mean(),
         )
     ).rename('t2m_climo_k').resample('bilinear')
+    if analysis_scale_m is not None:
+        climo_k = _coarsen_for_compute(climo_k, analysis_scale_m, min_scale_m=15000)
     climo_c = climo_k.subtract(273.15).rename('t2m_climo_c')
     if region_geom is not None:
         climo_c = climo_c.clip(region_geom)
@@ -942,14 +969,21 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global'):
 def t2m_anomaly_c(img, hour, region_geom=None, cache_tag='global', analysis_scale_m=None):
     valid_utc = RUN_INIT_UTC + timedelta(hours=int(hour))
     forecast_t2m_c = img.select(WN2_T2M_BAND).subtract(273.15)
-    climo_t2m_c = t2m_climo_1991_2020_c(valid_utc, region_geom=region_geom, cache_tag=cache_tag)
+    climo_t2m_c = t2m_climo_1991_2020_c(
+        valid_utc,
+        region_geom=region_geom,
+        cache_tag=cache_tag,
+        analysis_scale_m=analysis_scale_m,
+    )
     if region_geom is not None:
         forecast_t2m_c = forecast_t2m_c.clip(region_geom)
         climo_t2m_c = climo_t2m_c.clip(region_geom)
     if analysis_scale_m is not None:
-        work_scale = int(max(15000, float(analysis_scale_m)))
-        forecast_t2m_c = forecast_t2m_c.resample('bilinear').reproject(crs=TARGET_CRS, scale=work_scale)
-        climo_t2m_c = climo_t2m_c.resample('bilinear').reproject(crs=TARGET_CRS, scale=work_scale)
+        forecast_t2m_c = _coarsen_for_compute(forecast_t2m_c, analysis_scale_m, min_scale_m=15000)
+        climo_t2m_c = _coarsen_for_compute(climo_t2m_c, analysis_scale_m, min_scale_m=15000)
+    else:
+        forecast_t2m_c = forecast_t2m_c.toFloat()
+        climo_t2m_c = climo_t2m_c.toFloat()
     return forecast_t2m_c.subtract(climo_t2m_c).rename('t2m_anomaly_c')
 
 
@@ -1533,7 +1567,7 @@ def stitch_horizontal(left_file, right_file, out_file):
     stitched.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 
-def export_nh_split_composite(composite, out_file, dimensions):
+def export_nh_split_composite(composite, out_file, dimensions, scale=None):
     split_dims = split_nh_dimensions(dimensions)
     west_tmp = f'{out_file}.west_tmp.jpg'
     east_tmp = f'{out_file}.east_tmp.jpg'
@@ -1543,6 +1577,7 @@ def export_nh_split_composite(composite, out_file, dimensions):
             west_tmp,
             NH_W_BOUNDS,
             dimensions=split_dims,
+            scale=scale,
             crs=TARGET_CRS,
         )
         export_composite(
@@ -1550,6 +1585,7 @@ def export_nh_split_composite(composite, out_file, dimensions):
             east_tmp,
             NH_E_BOUNDS,
             dimensions=split_dims,
+            scale=scale,
             crs=TARGET_CRS,
         )
         stitch_horizontal(west_tmp, east_tmp, out_file)
@@ -1637,11 +1673,11 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         minor_interval=Z500_MINOR_CONTOUR_INTERVAL,
         major_interval=Z500_MAJOR_CONTOUR_INTERVAL,
     ):
-        anomaly_for_render = anomaly_field.reproject(crs=TARGET_CRS, scale=int(anomaly_scale_m))
-        contour_for_render = contour_field.reproject(crs=TARGET_CRS, scale=int(contour_scale_m))
+        anomaly_for_render = _coarsen_for_compute(anomaly_field, anomaly_scale_m, min_scale_m=25000)
+        contour_for_render = _coarsen_for_compute(contour_field, contour_scale_m, min_scale_m=25000)
         anomaly_layer = anomaly_overlay(anomaly_for_render)
         overlays = [
-            basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
+            flat_background_overlay(region_geom, color=BASEMAP_OCEAN_COLOR),
             anomaly_layer,
         ]
         if minor_interval and int(minor_interval) < int(major_interval):
@@ -1652,7 +1688,7 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 opacity=0.38,
                 smooth_px=0,
                 thicken_px=0,
-                line_width_frac=0.010,
+                line_width_frac=0.006,
             )
             overlays.append(z500_minor)
         z500_major = contour_overlay(
@@ -1662,7 +1698,7 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             opacity=0.92,
             smooth_px=0,
             thicken_px=0,
-            line_width_frac=0.016,
+            line_width_frac=0.009,
         )
         z540_contour = highlight_iso_overlay(
             contour_for_render,
@@ -1689,10 +1725,12 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         out_file = build_frame_path(prefix, h)
         if prefix == 'nh_z500a':
             nh_dims = dims_override if dims_override is not None else (map_dims if use_scale else shrink_dimensions(map_dims))
+            nh_scale = (scale_override if scale_override is not None else ANOMALY_NH_SCALE_M) if use_scale else None
             export_nh_split_composite(
                 composite_image,
                 out_file,
                 dimensions=nh_dims,
+                scale=nh_scale,
             )
             remap_nh_to_polar(out_file, lon0=NH_LON0)
             annotate_map_file(out_file, prefix, h)
@@ -1716,14 +1754,6 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             or 'INVALID_ARGUMENT' in msg
         )
 
-    anomaly_analysis_scale = Z500_NH_ANOM_SCALES_M[0] if prefix == 'nh_z500a' else Z500_NA_ANOM_SCALES_M[0]
-    true_anomaly = z500_anomaly_m(
-        img,
-        h,
-        region_geom=region_geom,
-        cache_tag=prefix,
-        analysis_scale_m=anomaly_analysis_scale,
-    )
     if prefix == 'nh_z500a':
         mid_dims = shrink_dimensions(map_dims)
         low_dims = shrink_dimensions(mid_dims)
@@ -1732,29 +1762,32 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             {
                 'use_scale': True,
                 'dims': mid_dims,
-                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[1],
+                'scale_m': int(ANOMALY_NH_SCALE_M * 1.4),
+                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[0],
                 'contour_scale_m': int(contour_scale_base * 1.2),
                 'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
                 'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
-                'label': 'split mid dims + major contours',
+                'label': 'split scale + major contours',
             },
             {
                 'use_scale': True,
                 'dims': low_dims,
-                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[2],
-                'contour_scale_m': int(contour_scale_base * 1.45),
+                'scale_m': int(ANOMALY_NH_SCALE_M * 2.0),
+                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[1],
+                'contour_scale_m': int(contour_scale_base * 1.6),
                 'minor_interval': 18,
                 'major_interval': 18,
-                'label': 'split low dims + sparse contours',
+                'label': 'split coarse scale + sparse contours',
             },
             {
                 'use_scale': True,
                 'dims': low_dims,
-                'anomaly_scale_m': int(Z500_NH_ANOM_SCALES_M[2] * 1.2),
-                'contour_scale_m': int(contour_scale_base * 1.8),
+                'scale_m': int(ANOMALY_NH_SCALE_M * 2.6),
+                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[2],
+                'contour_scale_m': int(contour_scale_base * 2.0),
                 'minor_interval': 24,
                 'major_interval': 24,
-                'label': 'split low dims + ultra sparse contours',
+                'label': 'split ultra coarse scale + ultra sparse contours',
             },
         ]
     else:
@@ -1763,38 +1796,47 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         contour_scale_base = int(ANOMALY_WORK_SCALE_M)
         plans = [
             {
-                'use_scale': False,
+                'use_scale': True,
                 'dims': mid_dims,
                 'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[0],
-                'contour_scale_m': int(contour_scale_base * 1.1),
+                'scale_m': int(ANOMALY_NA_SCALE_M * 1.6),
+                'contour_scale_m': int(contour_scale_base * 1.2),
                 'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
                 'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
-                'label': 'dims mid + major contours',
-            },
-            {
-                'use_scale': False,
-                'dims': low_dims,
-                'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[1],
-                'contour_scale_m': int(contour_scale_base * 1.4),
-                'minor_interval': 18,
-                'major_interval': 18,
-                'label': 'dims low + sparse contours',
+                'label': 'scale + major contours',
             },
             {
                 'use_scale': True,
                 'dims': low_dims,
+                'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[1],
                 'scale_m': int(ANOMALY_NA_SCALE_M * 2.2),
+                'contour_scale_m': int(contour_scale_base * 1.6),
+                'minor_interval': 18,
+                'major_interval': 18,
+                'label': 'coarse scale + sparse contours',
+            },
+            {
+                'use_scale': True,
+                'dims': low_dims,
+                'scale_m': int(ANOMALY_NA_SCALE_M * 2.9),
                 'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[2],
-                'contour_scale_m': int(contour_scale_base * 1.8),
+                'contour_scale_m': int(contour_scale_base * 2.0),
                 'minor_interval': 24,
                 'major_interval': 24,
-                'label': 'scale coarse + ultra sparse contours',
+                'label': 'ultra coarse scale + ultra sparse contours',
             },
         ]
 
     last_msg = ''
     for plan in plans:
         try:
+            true_anomaly = z500_anomaly_m(
+                img,
+                h,
+                region_geom=region_geom,
+                cache_tag=f'{prefix}_{plan["anomaly_scale_m"]}',
+                analysis_scale_m=plan['anomaly_scale_m'],
+            )
             _export_and_annotate(
                 _build_composite(
                     true_anomaly,
@@ -2135,14 +2177,6 @@ def generate_conus_t2m_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m'):
 
 def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m_anom'):
     region_geom = ee.Geometry.Rectangle(region, geodesic=False)
-    t2m_anom_c = t2m_anomaly_c(
-        img,
-        h,
-        region_geom=region_geom,
-        cache_tag=key,
-        analysis_scale_m=T2M_ANOM_WORK_SCALES_M[0],
-    )
-    t2m_anom_f = t2m_anom_c.multiply(9.0 / 5.0).rename('t2m_anomaly_f')
     t2m_f = (
         img.select(WN2_T2M_BAND)
         .subtract(273.15)
@@ -2154,14 +2188,14 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
     mid_dims = shrink_dimensions(base_dims)
     low_dims = shrink_dimensions(mid_dims)
     plans = [
-        {'dims': mid_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[0], 'contour_interval': 12, 'label': 'mid dims + 12F contours'},
-        {'dims': low_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[1], 'contour_interval': 18, 'label': 'low dims + sparse contours'},
-        {'dims': low_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[2], 'contour_interval': 24, 'label': 'low dims + ultra sparse contours'},
+        {'dims': mid_dims, 'scale_m': 30000, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[0], 'contour_interval': 12, 'label': 'scaled export + 12F contours'},
+        {'dims': low_dims, 'scale_m': 42000, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[1], 'contour_interval': 18, 'label': 'coarse scale + sparse contours'},
+        {'dims': low_dims, 'scale_m': 56000, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[2], 'contour_interval': 24, 'label': 'ultra coarse scale + ultra sparse contours'},
     ]
 
-    def _build_composite(work_scale_m, contour_interval):
-        anom_field = t2m_anom_f.reproject(crs=TARGET_CRS, scale=int(work_scale_m))
-        contour_field = t2m_f.reproject(crs=TARGET_CRS, scale=int(max(work_scale_m, 28000)))
+    def _build_composite(t2m_anom_f, work_scale_m, contour_interval):
+        anom_field = _coarsen_for_compute(t2m_anom_f, work_scale_m, min_scale_m=15000)
+        contour_field = _coarsen_for_compute(t2m_f, max(work_scale_m, 28000), min_scale_m=20000)
         t2m_anom_vis = anom_field.resample('bilinear').focalMean(1, 'circle', 'pixels')
         t2m_anom_layer = t2m_anom_vis.visualize(
             min=T2M_ANOM_F_MIN,
@@ -2185,7 +2219,7 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
             smooth_px=0,
         )
         return ee.ImageCollection([
-            basemap_overlay(region_geom, land_color=BASEMAP_LAND_COLOR, ocean_color=BASEMAP_OCEAN_COLOR),
+            flat_background_overlay(region_geom, color=BASEMAP_OCEAN_COLOR),
             t2m_anom_layer,
             temp_contours,
             freezing_line,
@@ -2204,11 +2238,26 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
     last_msg = ''
     for plan in plans:
         try:
+            t2m_anom_c = t2m_anomaly_c(
+                img,
+                h,
+                region_geom=region_geom,
+                cache_tag=f'{key}_{plan["work_scale_m"]}',
+                analysis_scale_m=plan['work_scale_m'],
+            )
+            t2m_anom_f = t2m_anom_c.multiply(9.0 / 5.0).rename('t2m_anomaly_f')
             composite = _build_composite(
+                t2m_anom_f=t2m_anom_f,
                 work_scale_m=plan['work_scale_m'],
                 contour_interval=plan['contour_interval'],
             )
-            export_composite(composite, out_file, region, dimensions=plan['dims'])
+            export_composite(
+                composite,
+                out_file,
+                region,
+                dimensions=plan['dims'],
+                scale=plan['scale_m'],
+            )
             annotate_map_file(out_file, key, h)
             return
         except Exception as e:
