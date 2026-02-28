@@ -1,0 +1,378 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WeatherNext2 viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        :root {
+            --controls-h: 188px;
+        }
+        body {
+            background:#1f1f1f;
+            color:#efefef;
+            font-family:system-ui, sans-serif;
+            text-align:center;
+            margin:0;
+            padding-bottom:0;
+        }
+        .wrap {
+            max-width:1240px;
+            margin:0 auto;
+            padding:14px 10px calc(var(--controls-h) + 14px);
+        }
+        .map-wrap {
+            background:#111;
+            border:1px solid #4f4f4f;
+            height:60vh;
+            max-height:calc(100vh - var(--controls-h) - 30px);
+            min-height:220px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            overflow:hidden;
+        }
+        img {
+            width:auto;
+            height:auto;
+            max-width:100%;
+            max-height:100%;
+            object-fit:contain;
+            display:block;
+            background:#111;
+        }
+        #title {
+            margin:6px 0 10px;
+            font-size:24px;
+            font-weight:700;
+            letter-spacing:0.01em;
+        }
+        button {
+            padding:10px 16px;
+            font-size:16px;
+            cursor:pointer;
+            border:1px solid #666;
+            background:#2d2d2d;
+            color:#f1f1f1;
+            border-radius:8px;
+        }
+        select {
+            padding:8px 10px;
+            font-size:15px;
+            border-radius:8px;
+            border:1px solid #666;
+            background:#2a2a2a;
+            color:#f1f1f1;
+            min-width:120px;
+        }
+        #label {
+            display:inline-block;
+            min-width:120px;
+            font-weight:700;
+            letter-spacing:0.03em;
+        }
+        .bottom-controls {
+            position:fixed;
+            left:0;
+            right:0;
+            bottom:0;
+            background:#141414;
+            border-top:1px solid #3c3c3c;
+            padding:10px 10px calc(12px + env(safe-area-inset-bottom));
+            box-shadow:0 -6px 16px rgba(0, 0, 0, 0.35);
+        }
+        .row {
+            max-width:1240px;
+            margin:0 auto;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            flex-wrap:wrap;
+            gap:10px;
+        }
+        #hourSlider {
+            width:min(960px, 94vw);
+            height:34px;
+            touch-action:pan-x;
+        }
+        @media (max-width: 760px) {
+            #title { font-size:20px; margin:8px 0 10px; }
+            button { font-size:14px; padding:8px 12px; }
+            select { font-size:14px; min-width:96px; }
+            #label { min-width:86px; }
+            .bottom-controls { padding:10px 8px calc(14px + env(safe-area-inset-bottom)); }
+            .row { gap:8px; }
+            #hourSlider { width:min(960px, 96vw); }
+            .map-wrap {
+                height:52vh;
+                min-height:160px;
+                max-height:calc(100vh - var(--controls-h) - 18px);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h2 id="title">WeatherNext2 viewer</h2>
+        <div class="map-wrap">
+            <img id="map" src="" alt="WN2 map">
+        </div>
+    </div>
+
+    <div class="bottom-controls">
+        <div class="row">
+            <label for="run">Run:</label>
+            <select id="run"></select>
+            <label for="product">Map:</label>
+            <select id="product"></select>
+            <label for="snowRatio">Snow Ratio:</label>
+            <select id="snowRatio"></select>
+        </div>
+        <div class="row" style="margin-top:8px;">
+            <button id="prevBtn">Prev</button>
+            <span id="label">Hour ---</span>
+            <button id="nextBtn">Next</button>
+        </div>
+        <div class="row" style="margin-top:6px;">
+            <input type="range" id="hourSlider" min="0" max="0" step="1" value="0">
+        </div>
+    </div>
+
+    <script>
+        const manifest = {"generated_utc":"2026-02-28T02:44:50Z","history_hours":24,"default_run_id":"2026022706","snow_products":["conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"product_labels":{"nh_z500a":"NH 500mb Height Anomaly","na_z500a":"North America 500mb Height Anomaly","conus_mslp_ptype":"CONUS MSLP + P-Type","ne_mslp_ptype":"Northeast MSLP + P-Type","conus_vort500":"CONUS 500mb Vorticity","conus_t2m":"USA Region 2m Temperature","conus_t2m_anom":"USA Region 2m Temperature Anomaly","conus_snow_accum":"CONUS Snowfall Accumulation","ne_snow_accum":"Northeast Snowfall Accumulation","ne_zoom_snow_accum":"New England Zoom Snowfall Accumulation"},"runs":[{"id":"2026022718","label":"2026-02-27 18Z","run_date":"202602271800_202602280000_0","init_utc":"2026-02-27T18:00:00Z","hours":[6],"products":["conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"product_hours":{"conus_snow_accum":[6],"ne_snow_accum":[6],"ne_zoom_snow_accum":[6]},"product_snow_ratios":{"conus_snow_accum":[10,12,15,20],"ne_snow_accum":[10,12,15,20],"ne_zoom_snow_accum":[10,12,15,20]},"updated_utc":"2026-02-28T02:44:50Z"},{"id":"2026022712","label":"2026-02-27 12Z","run_date":"202602271200_202602271800_0","init_utc":"2026-02-27T12:00:00Z","hours":[6,12,18,24,30,36,42,48],"products":["conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"product_hours":{"conus_snow_accum":[6,12,18,24,30,36,42,48],"ne_snow_accum":[6,12,18,24,30,36,42,48],"ne_zoom_snow_accum":[6,12,18,24,30,36,42,48]},"product_snow_ratios":{"conus_snow_accum":[10,12,15,20],"ne_snow_accum":[10,12,15,20],"ne_zoom_snow_accum":[10,12,15,20]},"updated_utc":"2026-02-27T23:52:42Z"},{"id":"2026022706","label":"2026-02-27 06Z","run_date":"202602270600_202602271200_0","init_utc":"2026-02-27T06:00:00Z","hours":[6],"products":["conus_mslp_ptype","ne_mslp_ptype","conus_vort500","conus_t2m","conus_snow_accum","ne_snow_accum","ne_zoom_snow_accum"],"snow_ratios":[10,12,15,20],"product_hours":{"conus_mslp_ptype":[6],"ne_mslp_ptype":[6],"conus_vort500":[6],"conus_t2m":[6],"conus_snow_accum":[6],"ne_snow_accum":[6],"ne_zoom_snow_accum":[6]},"product_snow_ratios":{"conus_snow_accum":[10,12,15,20],"ne_snow_accum":[10,12,15,20],"ne_zoom_snow_accum":[10,12,15,20]},"updated_utc":"2026-02-27T16:26:10Z"}]};
+        const runs = Array.isArray(manifest.runs) ? manifest.runs : [];
+        const snowProducts = new Set(Array.isArray(manifest.snow_products) ? manifest.snow_products : []);
+        const productLabels = (manifest.product_labels && typeof manifest.product_labels === 'object') ? manifest.product_labels : {};
+        let activeHours = [];
+        let idx = 0;
+
+        const mapEl = document.getElementById('map');
+        const titleEl = document.getElementById('title');
+        const mapWrapEl = document.querySelector('.map-wrap');
+        const controlsEl = document.querySelector('.bottom-controls');
+        const rootEl = document.documentElement;
+        const labelEl = document.getElementById('label');
+        const runEl = document.getElementById('run');
+        const productEl = document.getElementById('product');
+        const ratioEl = document.getElementById('snowRatio');
+        const sliderEl = document.getElementById('hourSlider');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+
+        function normalizeIntList(values, minValue, maxValue) {
+            if (!Array.isArray(values)) return [];
+            const out = [];
+            for (const raw of values) {
+                const n = Number(raw);
+                if (!Number.isInteger(n)) continue;
+                if (minValue !== null && n < minValue) continue;
+                if (maxValue !== null && n > maxValue) continue;
+                out.push(n);
+            }
+            return Array.from(new Set(out)).sort((a, b) => a - b);
+        }
+
+        function getCurrentRun() {
+            const selected = runEl.value;
+            for (const run of runs) {
+                if (String(run.id) === selected) return run;
+            }
+            return runs.length ? runs[0] : null;
+        }
+
+        function setSelectOptions(selectEl, values, labelFn) {
+            const prev = selectEl.value;
+            selectEl.innerHTML = '';
+            for (const value of values) {
+                const option = document.createElement('option');
+                option.value = String(value);
+                option.textContent = labelFn(value);
+                selectEl.appendChild(option);
+            }
+            for (const value of values) {
+                if (String(value) === prev) {
+                    selectEl.value = prev;
+                    return;
+                }
+            }
+            if (values.length) {
+                selectEl.value = String(values[0]);
+            }
+        }
+
+        function buildFrameName(product, hour, ratio) {
+            const hourStr = String(hour).padStart(3, '0');
+            if (snowProducts.has(product)) {
+                const ratioStr = String(ratio).padStart(2, '0');
+                return product + '_r' + ratioStr + '_' + hourStr + '.jpg';
+            }
+            return product + '_' + hourStr + '.jpg';
+        }
+
+        function getProductHours(run, product) {
+            if (!run || !product) return [];
+            const scoped = (run.product_hours && typeof run.product_hours === 'object')
+                ? run.product_hours[product]
+                : null;
+            const scopedHours = normalizeIntList(scoped, 0, null);
+            if (scopedHours.length) return scopedHours;
+            return normalizeIntList(run.hours, 0, null);
+        }
+
+        function getProductRatios(run, product) {
+            if (!run || !product) return [];
+            const scoped = (run.product_snow_ratios && typeof run.product_snow_ratios === 'object')
+                ? run.product_snow_ratios[product]
+                : null;
+            const scopedRatios = normalizeIntList(scoped, 10, 20);
+            if (scopedRatios.length) return scopedRatios;
+            return normalizeIntList(run.snow_ratios, 10, 20);
+        }
+
+        function syncProductScopedControls() {
+            const run = getCurrentRun();
+            if (!run) {
+                activeHours = [];
+                sliderEl.max = '0';
+                sliderEl.value = '0';
+                idx = 0;
+                return;
+            }
+            const product = productEl.value;
+            const isSnow = snowProducts.has(product);
+            const ratios = isSnow ? getProductRatios(run, product) : [];
+            setSelectOptions(ratioEl, ratios.length ? ratios : [10], (ratio) => ratio + ':1');
+            const previousHour = activeHours[idx];
+            activeHours = getProductHours(run, product);
+            if (activeHours.length === 0) {
+                idx = 0;
+            } else {
+                const found = activeHours.indexOf(previousHour);
+                idx = found >= 0 ? found : 0;
+            }
+            sliderEl.max = String(Math.max(0, activeHours.length - 1));
+            sliderEl.value = String(idx);
+        }
+
+        function syncRunScopedControls() {
+            const run = getCurrentRun();
+            if (!run) {
+                activeHours = [];
+                productEl.innerHTML = '';
+                ratioEl.innerHTML = '';
+                sliderEl.max = '0';
+                sliderEl.value = '0';
+                idx = 0;
+                return;
+            }
+            const products = Array.isArray(run.products) ? run.products : [];
+            setSelectOptions(productEl, products, (key) => productLabels[key] || key);
+            syncProductScopedControls();
+        }
+
+        function viewportHeight() {
+            if (window.visualViewport && Number.isFinite(window.visualViewport.height)) {
+                return Math.floor(window.visualViewport.height);
+            }
+            return Math.floor(window.innerHeight || document.documentElement.clientHeight || 800);
+        }
+
+        function syncBottomInset() {
+            const h = controlsEl ? Math.ceil(controlsEl.getBoundingClientRect().height) : 0;
+            rootEl.style.setProperty('--controls-h', String(Math.max(110, h)) + 'px');
+            document.body.style.paddingBottom = String(h + 14) + 'px';
+            if (mapWrapEl) {
+                const isMobile = window.matchMedia('(max-width: 760px)').matches;
+                const mapTop = Math.max(0, Math.ceil(mapWrapEl.getBoundingClientRect().top));
+                const vh = Math.max(320, viewportHeight());
+                const edgeGap = isMobile ? 14 : 12;
+                const minMapHeight = isMobile ? 160 : 220;
+                const targetHeight = Math.max(minMapHeight, vh - h - mapTop - edgeGap);
+                mapWrapEl.style.height = String(targetHeight) + 'px';
+            }
+        }
+
+        function render() {
+            const run = getCurrentRun();
+            if (!run || !activeHours.length || !productEl.value) {
+                mapEl.src = '';
+                labelEl.innerText = 'No hours';
+                titleEl.innerText = 'WeatherNext2 viewer';
+                syncBottomInset();
+                return;
+            }
+
+            const product = productEl.value;
+            const isSnow = snowProducts.has(product);
+            ratioEl.disabled = !isSnow;
+            if (!isSnow) {
+                ratioEl.title = 'Snow ratio applies to snowfall accumulation maps only.';
+            } else {
+                ratioEl.title = '';
+                const ratioOptions = getProductRatios(run, product);
+                if (ratioOptions.length && !ratioOptions.includes(Number(ratioEl.value))) {
+                    ratioEl.value = String(ratioOptions[0]);
+                }
+            }
+
+            const hour = activeHours[idx];
+            const ratio = Number(ratioEl.value || 10);
+            const frameName = buildFrameName(product, hour, ratio);
+            const runId = String(run.id);
+            const hourStr = String(hour).padStart(3, '0');
+
+            mapEl.src = 'runs/' + runId + '/' + frameName;
+            mapEl.alt = runId + ' ' + product + ' hour ' + hourStr;
+            labelEl.innerText = 'Hour ' + hourStr;
+            titleEl.innerText = 'WeatherNext2 viewer';
+            syncBottomInset();
+        }
+
+        function change(dir) {
+            if (!activeHours.length) return;
+            idx = (idx + dir + activeHours.length) % activeHours.length;
+            sliderEl.value = String(idx);
+            render();
+        }
+
+        runEl.addEventListener('change', () => {
+            syncRunScopedControls();
+            render();
+        });
+        productEl.addEventListener('change', () => {
+            syncProductScopedControls();
+            render();
+        });
+        ratioEl.addEventListener('change', () => {
+            syncProductScopedControls();
+            render();
+        });
+        sliderEl.addEventListener('input', () => {
+            idx = Number(sliderEl.value);
+            render();
+        });
+        prevBtn.addEventListener('click', () => change(-1));
+        nextBtn.addEventListener('click', () => change(1));
+        mapEl.addEventListener('load', syncBottomInset);
+
+        setSelectOptions(runEl, runs.map((run) => run.id), (id) => {
+            const run = runs.find((item) => String(item.id) === String(id));
+            return run ? (run.label || String(id)) : String(id);
+        });
+        if (runs.length) {
+            const defaultId = runs.some((run) => String(run.id) === String(manifest.default_run_id))
+                ? String(manifest.default_run_id)
+                : String(runs[0].id);
+            runEl.value = defaultId;
+        }
+        window.addEventListener('resize', syncBottomInset);
+        window.addEventListener('orientationchange', syncBottomInset);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', syncBottomInset);
+        }
+        syncRunScopedControls();
+        syncBottomInset();
+        render();
+    </script>
+</body>
+</html>
