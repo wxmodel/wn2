@@ -1,7 +1,7 @@
 {
-  "generated_utc": "2026-02-28T13:21:22Z",
-  "history_hours": 12,
-  "default_run_id": "2026022718",
+  "generated_utc": "2026-02-28T17:09:56Z",
+  "history_hours": 24,
+  "default_run_id": "2026022806",
   "snow_products": [
     "conus_snow_accum",
     "ne_snow_accum",
@@ -20,6 +20,103 @@
     "ne_zoom_snow_accum": "New England Zoom Snowfall Accumulation"
   },
   "runs": [
+    {
+      "id": "2026022806",
+      "label": "2026-02-28 06Z",
+      "run_date": "202602280600_202602281200_0",
+      "init_utc": "2026-02-28T06:00:00Z",
+      "hours": [
+        6
+      ],
+      "products": [
+        "nh_z500a",
+        "na_z500a",
+        "conus_mslp_ptype",
+        "ne_mslp_ptype",
+        "conus_vort500",
+        "conus_t2m",
+        "conus_t2m_anom",
+        "conus_snow_accum",
+        "ne_snow_accum",
+        "ne_zoom_snow_accum"
+      ],
+      "snow_ratios": [
+        10,
+        12,
+        15,
+        20
+      ],
+      "product_hours": {
+        "nh_z500a": [
+          6
+        ],
+        "na_z500a": [
+          6
+        ],
+        "conus_mslp_ptype": [
+          6
+        ],
+        "ne_mslp_ptype": [
+          6
+        ],
+        "conus_vort500": [
+          6
+        ],
+        "conus_t2m": [
+          6
+        ],
+        "conus_t2m_anom": [
+          6
+        ],
+        "conus_snow_accum": [
+          6
+        ],
+        "ne_snow_accum": [
+          6
+        ],
+        "ne_zoom_snow_accum": [
+          6
+        ]
+      },
+      "product_snow_ratios": {
+        "conus_snow_accum": [
+          10,
+          12,
+          15,
+          20
+        ],
+        "ne_snow_accum": [
+          10,
+          12,
+          15,
+          20
+        ],
+        "ne_zoom_snow_accum": [
+          10,
+          12,
+          15,
+          20
+        ]
+      },
+      "enabled_products": [
+        "nh_z500a",
+        "na_z500a",
+        "conus_mslp_ptype",
+        "ne_mslp_ptype",
+        "conus_vort500",
+        "conus_t2m",
+        "conus_t2m_anom",
+        "conus_snow_accum",
+        "ne_snow_accum",
+        "ne_zoom_snow_accum"
+      ],
+      "missing_products": [],
+      "failed_products": [],
+      "failure_messages": {},
+      "successful_exports": 19,
+      "failed_exports": 0,
+      "updated_utc": "2026-02-28T17:09:56Z"
+    },
     {
       "id": "2026022800",
       "label": "2026-02-28 00Z",
