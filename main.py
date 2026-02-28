@@ -2490,6 +2490,49 @@ def normalize_product_ratio_map(raw_map):
     return out
 
 
+def estimate_run_frame_count(entry):
+    products = [str(p) for p in entry.get('products', []) if isinstance(p, str)]
+    if not products:
+        return 0
+    product_hours = normalize_product_hours_map(entry.get('product_hours'))
+    product_ratios = normalize_product_ratio_map(entry.get('product_snow_ratios'))
+    fallback_hours = normalize_int_list(entry.get('hours', []), min_value=0)
+    fallback_ratios = normalize_int_list(entry.get('snow_ratios', []), min_value=10, max_value=20)
+
+    frame_count = 0
+    for key in products:
+        hours = product_hours.get(key, fallback_hours)
+        if not hours:
+            continue
+        if is_snow_product(key):
+            ratios = product_ratios.get(key, fallback_ratios)
+            if not ratios:
+                ratios = [10]
+            frame_count += len(hours) * len(ratios)
+        else:
+            frame_count += len(hours)
+    return frame_count
+
+
+def choose_default_run_id(manifest_runs, fallback_id):
+    if not manifest_runs:
+        return fallback_id
+    total_known_products = len(PRODUCT_OPTIONS)
+
+    def _score(item):
+        products = [str(p) for p in item.get('products', []) if isinstance(p, str)]
+        product_count = len(products)
+        product_coverage = (product_count / float(total_known_products)) if total_known_products > 0 else 0.0
+        frame_count = estimate_run_frame_count(item)
+        init_dt = parse_iso_utc(item.get('init_utc')) or datetime.min.replace(tzinfo=timezone.utc)
+        # Prefer broad product coverage first, then total frame inventory, then recency.
+        return (product_coverage, product_count, frame_count, init_dt)
+
+    best = max(manifest_runs, key=_score)
+    best_id = str(best.get('id') or '').strip()
+    return best_id or fallback_id
+
+
 manifest_path = Path(OUTPUT) / 'runs_manifest.json'
 existing_entries = load_manifest_entries(manifest_path)
 now_utc = datetime.now(timezone.utc)
@@ -2593,6 +2636,7 @@ manifest_runs = sorted(
     key=lambda item: parse_iso_utc(item.get('init_utc')) or datetime.min.replace(tzinfo=timezone.utc),
     reverse=True,
 )
+preferred_default_run_id = choose_default_run_id(manifest_runs, RUN_ID)
 valid_run_ids = {item['id'] for item in manifest_runs}
 if RUNS_ROOT_DIR.exists():
     for child in RUNS_ROOT_DIR.iterdir():
@@ -2602,7 +2646,7 @@ if RUNS_ROOT_DIR.exists():
 manifest_payload = {
     'generated_utc': iso_utc(now_utc),
     'history_hours': RUN_HISTORY_HOURS,
-    'default_run_id': RUN_ID,
+    'default_run_id': preferred_default_run_id,
     'snow_products': sorted(SNOW_PRODUCT_KEYS),
     'product_labels': {key: label for key, label, _, _ in PRODUCT_OPTIONS},
     'runs': manifest_runs,
