@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-02-28T03:35:18Z",
+  "generated_utc": "2026-02-28T03:43:14Z",
   "history_hours": 24,
   "default_run_id": "2026022706",
   "snow_products": [
@@ -94,6 +94,7 @@
       "failed_products": [
         "conus_mslp_ptype",
         "conus_t2m",
+        "conus_t2m_anom",
         "conus_vort500",
         "na_z500a",
         "ne_mslp_ptype",
@@ -101,7 +102,7 @@
       ],
       "successful_exports": 12,
       "failed_exports": 7,
-      "updated_utc": "2026-02-28T03:35:18Z"
+      "updated_utc": "2026-02-28T03:43:14Z"
     },
     {
       "id": "2026022712",
