@@ -855,15 +855,13 @@ def _clip_collection_to_region(collection, region_geom):
 
 
 def _coarsen_for_compute(image, scale_m, min_scale_m):
+    img = ee.Image(image).toFloat()
     if scale_m is None:
-        return ee.Image(image).toFloat()
+        return img
     work_scale = int(max(float(min_scale_m), float(scale_m)))
-    return (
-        ee.Image(image)
-        .toFloat()
-        .reduceResolution(reducer=ee.Reducer.mean(), bestEffort=True, maxPixels=1024)
-        .reproject(crs=TARGET_CRS, scale=work_scale)
-    )
+    # reduceResolution is brittle on some derived images (missing default projection);
+    # use explicit reprojection instead for predictable low-memory behavior.
+    return img.resample('bilinear').reproject(crs=TARGET_CRS, scale=work_scale)
 
 
 def _wrap_day_of_year_filter(start_doy, end_doy):
