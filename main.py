@@ -239,7 +239,7 @@ if FAST_RENDER:
     PTYPE_NE_DIMS = '1200x980'
     SNOW_CONUS_DIMS = '1320x960'
     SNOW_NE_DIMS = '1200x980'
-    NH_SOURCE_DIMS = '2000x400'
+    NH_SOURCE_DIMS = '1600x320'
     NH_POLAR_DIMS = 980
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
@@ -255,7 +255,7 @@ else:
     PTYPE_NE_DIMS = '1400x1120'
     SNOW_CONUS_DIMS = '1600x1140'
     SNOW_NE_DIMS = '1400x1120'
-    NH_SOURCE_DIMS = '2200x440'
+    NH_SOURCE_DIMS = '1800x360'
     NH_POLAR_DIMS = 1080
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
@@ -892,7 +892,7 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global'):
     return climo
 
 
-def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global'):
+def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global', analysis_scale_m=None):
     valid_utc = RUN_INIT_UTC + timedelta(hours=int(hour))
     forecast_height_m = img.select(WN2_Z500_BAND).divide(9.80665)
     climo_height_m = z500_climo_1991_2020_m(valid_utc, region_geom=region_geom, cache_tag=cache_tag)
@@ -901,6 +901,10 @@ def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global'):
         climo_height_m = climo_height_m.clip(region_geom)
     forecast_height_m = forecast_height_m.resample('bilinear')
     climo_height_m = climo_height_m.resample('bilinear')
+    if analysis_scale_m is not None:
+        work_scale = int(max(25000, float(analysis_scale_m)))
+        forecast_height_m = forecast_height_m.reproject(crs=TARGET_CRS, scale=work_scale)
+        climo_height_m = climo_height_m.reproject(crs=TARGET_CRS, scale=work_scale)
     return forecast_height_m.subtract(climo_height_m).rename('z500_anomaly_m')
 
 
@@ -935,13 +939,17 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global'):
     return climo_c
 
 
-def t2m_anomaly_c(img, hour, region_geom=None, cache_tag='global'):
+def t2m_anomaly_c(img, hour, region_geom=None, cache_tag='global', analysis_scale_m=None):
     valid_utc = RUN_INIT_UTC + timedelta(hours=int(hour))
     forecast_t2m_c = img.select(WN2_T2M_BAND).subtract(273.15)
     climo_t2m_c = t2m_climo_1991_2020_c(valid_utc, region_geom=region_geom, cache_tag=cache_tag)
     if region_geom is not None:
         forecast_t2m_c = forecast_t2m_c.clip(region_geom)
         climo_t2m_c = climo_t2m_c.clip(region_geom)
+    if analysis_scale_m is not None:
+        work_scale = int(max(15000, float(analysis_scale_m)))
+        forecast_t2m_c = forecast_t2m_c.resample('bilinear').reproject(crs=TARGET_CRS, scale=work_scale)
+        climo_t2m_c = climo_t2m_c.resample('bilinear').reproject(crs=TARGET_CRS, scale=work_scale)
     return forecast_t2m_c.subtract(climo_t2m_c).rename('t2m_anomaly_c')
 
 
@@ -1708,7 +1716,14 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             or 'INVALID_ARGUMENT' in msg
         )
 
-    true_anomaly = z500_anomaly_m(img, h, region_geom=region_geom, cache_tag=prefix)
+    anomaly_analysis_scale = Z500_NH_ANOM_SCALES_M[0] if prefix == 'nh_z500a' else Z500_NA_ANOM_SCALES_M[0]
+    true_anomaly = z500_anomaly_m(
+        img,
+        h,
+        region_geom=region_geom,
+        cache_tag=prefix,
+        analysis_scale_m=anomaly_analysis_scale,
+    )
     if prefix == 'nh_z500a':
         mid_dims = shrink_dimensions(map_dims)
         low_dims = shrink_dimensions(mid_dims)
@@ -2120,7 +2135,13 @@ def generate_conus_t2m_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m'):
 
 def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m_anom'):
     region_geom = ee.Geometry.Rectangle(region, geodesic=False)
-    t2m_anom_c = t2m_anomaly_c(img, h, region_geom=region_geom, cache_tag=key)
+    t2m_anom_c = t2m_anomaly_c(
+        img,
+        h,
+        region_geom=region_geom,
+        cache_tag=key,
+        analysis_scale_m=T2M_ANOM_WORK_SCALES_M[0],
+    )
     t2m_anom_f = t2m_anom_c.multiply(9.0 / 5.0).rename('t2m_anomaly_f')
     t2m_f = (
         img.select(WN2_T2M_BAND)
