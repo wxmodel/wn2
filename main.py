@@ -355,6 +355,7 @@ CLIMO_T2M_COLLECTION = (
     .filter(ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year'))
 )
 CLIMO_T2M_CACHE = {}
+CLIMO_SIZE_LOGGED = set()
 
 PRODUCT_OPTIONS = [
     ('nh_z500a', 'NH 500mb Height Anomaly', 'nh_z500a_*.jpg', run_nh_z500a_env),
@@ -887,15 +888,31 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global', anal
     if cached is not None:
         return cached
 
-    start_doy = doy - CLIMO_DOY_WINDOW_DAYS
-    end_doy = doy + CLIMO_DOY_WINDOW_DAYS
     hour_collection = CLIMO_H500_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
-    window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
+    if CLIMO_DOY_WINDOW_DAYS <= 0:
+        window_collection = hour_collection.filter(
+            ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+        ).filter(
+            ee.Filter.calendarRange(int(valid_utc.day), int(valid_utc.day), 'day_of_month')
+        )
+    else:
+        start_doy = doy - CLIMO_DOY_WINDOW_DAYS
+        end_doy = doy + CLIMO_DOY_WINDOW_DAYS
+        window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
     fallback_collection = CLIMO_H500_COLLECTION.filter(
         ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
+    size_log_key = ('h500', int(valid_utc.month), int(valid_utc.day), hour)
+    if size_log_key not in CLIMO_SIZE_LOGGED:
+        try:
+            window_n = int(window_collection.size().getInfo())
+            fallback_n = int(fallback_collection.size().getInfo())
+            print(f'[{ts()}] H500 climo sample count month/day/hour={window_n}, fallback month/hour={fallback_n}.')
+        except Exception as e:
+            print(f'[{ts()}] H500 climo sample-count check skipped: {e}')
+        CLIMO_SIZE_LOGGED.add(size_log_key)
     climo = ee.Image(
         ee.Algorithms.If(
             window_collection.size().gt(0),
@@ -939,15 +956,31 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analy
     if cached is not None:
         return cached
 
-    start_doy = doy - CLIMO_DOY_WINDOW_DAYS
-    end_doy = doy + CLIMO_DOY_WINDOW_DAYS
     hour_collection = CLIMO_T2M_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
-    window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
+    if CLIMO_DOY_WINDOW_DAYS <= 0:
+        window_collection = hour_collection.filter(
+            ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+        ).filter(
+            ee.Filter.calendarRange(int(valid_utc.day), int(valid_utc.day), 'day_of_month')
+        )
+    else:
+        start_doy = doy - CLIMO_DOY_WINDOW_DAYS
+        end_doy = doy + CLIMO_DOY_WINDOW_DAYS
+        window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
     fallback_collection = CLIMO_T2M_COLLECTION.filter(
         ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
+    size_log_key = ('t2m', int(valid_utc.month), int(valid_utc.day), hour)
+    if size_log_key not in CLIMO_SIZE_LOGGED:
+        try:
+            window_n = int(window_collection.size().getInfo())
+            fallback_n = int(fallback_collection.size().getInfo())
+            print(f'[{ts()}] T2M climo sample count month/day/hour={window_n}, fallback month/hour={fallback_n}.')
+        except Exception as e:
+            print(f'[{ts()}] T2M climo sample-count check skipped: {e}')
+        CLIMO_SIZE_LOGGED.add(size_log_key)
     climo_k = ee.Image(
         ee.Algorithms.If(
             window_collection.size().gt(0),
