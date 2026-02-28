@@ -2240,10 +2240,13 @@ def _record_task_failure(hour, name, err_msg, exc):
     print(f'[{ts()}] Hour {hour} product {name}: FAILED - {err_msg}')
     failures.append((f'{hour}:{name}', err_msg))
     product_key = None
-    for key, _, _ in ENABLED_PRODUCTS:
-        if name == key or name.startswith(f'{key}_'):
-            product_key = key
-            break
+    enabled_product_keys = [key for key, _, _ in ENABLED_PRODUCTS]
+    if name in enabled_product_keys:
+        product_key = name
+    else:
+        prefix_matches = [key for key in enabled_product_keys if name.startswith(f'{key}_')]
+        if prefix_matches:
+            product_key = max(prefix_matches, key=len)
     if product_key is None:
         product_key = name
     failed_product_keys.add(product_key)
