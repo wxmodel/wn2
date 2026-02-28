@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-02-28T04:42:05Z",
+  "generated_utc": "2026-02-28T05:53:55Z",
   "history_hours": 24,
   "default_run_id": "2026022718",
   "snow_products": [
@@ -109,13 +109,13 @@
         "nh_z500a"
       ],
       "failure_messages": {
-        "conus_t2m_anom": "Thumbnail download failed with status 400: {   \"error\": {     \"code\": 400,     \"message\": \"User memory limit exceeded.\",     \"status\": \"INVALID_ARGUMENT\"   } }",
+        "conus_t2m_anom": "conus_t2m_anom hour 6: true-anomaly export failed after retries. Last error: Thumbnail download failed with status 400: {   \"error\": {     \"code\": 400,     \"message\": \"User memory limit exceeded.\",     \"status\": \"INVALID_ARGUMENT\"   } }",
         "na_z500a": "na_z500a hour 6: true-anomaly-only export failed after retries (fallback disabled). Last error: Thumbnail download failed with status 400: {   \"error\": {     \"code\": 400,     \"message\": \"User memory limit exceeded.\",     \"status\": \"INVALID_ARGUMENT\"   } }",
         "nh_z500a": "nh_z500a hour 6: true-anomaly-only export failed after retries (fallback disabled). Last error: Thumbnail download failed with status 400: {   \"error\": {     \"code\": 400,     \"message\": \"User memory limit exceeded.\",     \"status\": \"INVALID_ARGUMENT\"   } }"
       },
       "successful_exports": 16,
       "failed_exports": 3,
-      "updated_utc": "2026-02-28T04:42:05Z"
+      "updated_utc": "2026-02-28T05:53:55Z"
     },
     {
       "id": "2026022712",
