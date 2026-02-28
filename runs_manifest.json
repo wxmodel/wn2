@@ -1,7 +1,7 @@
 {
-  "generated_utc": "2026-02-28T03:49:04Z",
+  "generated_utc": "2026-02-28T04:18:34Z",
   "history_hours": 24,
-  "default_run_id": "2026022706",
+  "default_run_id": "2026022718",
   "snow_products": [
     "conus_snow_accum",
     "ne_snow_accum",
@@ -29,6 +29,10 @@
         6
       ],
       "products": [
+        "conus_mslp_ptype",
+        "ne_mslp_ptype",
+        "conus_vort500",
+        "conus_t2m",
         "conus_snow_accum",
         "ne_snow_accum",
         "ne_zoom_snow_accum"
@@ -40,6 +44,18 @@
         20
       ],
       "product_hours": {
+        "conus_mslp_ptype": [
+          6
+        ],
+        "ne_mslp_ptype": [
+          6
+        ],
+        "conus_vort500": [
+          6
+        ],
+        "conus_t2m": [
+          6
+        ],
         "conus_snow_accum": [
           6
         ],
@@ -85,33 +101,21 @@
       "missing_products": [
         "nh_z500a",
         "na_z500a",
-        "conus_mslp_ptype",
-        "ne_mslp_ptype",
-        "conus_vort500",
-        "conus_t2m",
         "conus_t2m_anom"
       ],
       "failed_products": [
-        "conus_mslp_ptype",
-        "conus_t2m",
         "conus_t2m_anom",
-        "conus_vort500",
         "na_z500a",
-        "ne_mslp_ptype",
         "nh_z500a"
       ],
       "failure_messages": {
-        "conus_mslp_ptype": "Image.resample: Invalid interpolation mode: nearest.",
-        "conus_t2m": "Image.resample: Invalid interpolation mode: nearest.",
-        "conus_t2m_anom": "Image.resample: Invalid interpolation mode: nearest.",
-        "conus_vort500": "Image.resample: Invalid interpolation mode: nearest.",
-        "na_z500a": "Image.resample: Invalid interpolation mode: nearest.",
-        "ne_mslp_ptype": "Image.resample: Invalid interpolation mode: nearest.",
-        "nh_z500a": "Image.resample: Invalid interpolation mode: nearest."
+        "conus_t2m_anom": "Thumbnail download failed with status 400: {   \"error\": {     \"code\": 400,     \"message\": \"User memory limit exceeded.\",     \"status\": \"INVALID_ARGUMENT\"   } }",
+        "na_z500a": "na_z500a hour 6: true-anomaly-only export failed after retries (fallback disabled). Last error: Thumbnail download failed with status 400: {   \"error\": {     \"code\": 400,     \"message\": \"User memory limit exceeded.\",     \"status\": \"INVALID_ARGUMENT\"   } }",
+        "nh_z500a": "nh_z500a hour 6: true-anomaly-only export failed after retries (fallback disabled). Last error: Thumbnail download failed with status 400: {   \"error\": {     \"code\": 400,     \"message\": \"User memory limit exceeded.\",     \"status\": \"INVALID_ARGUMENT\"   } }"
       },
-      "successful_exports": 12,
-      "failed_exports": 7,
-      "updated_utc": "2026-02-28T03:49:04Z"
+      "successful_exports": 16,
+      "failed_exports": 3,
+      "updated_utc": "2026-02-28T04:18:34Z"
     },
     {
       "id": "2026022712",
