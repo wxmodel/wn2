@@ -769,7 +769,7 @@ def get_hour_image(h):
 # --- 3. METEOROLOGY LOGIC ---
 def contour_overlay(field, interval, color, opacity=0.82, smooth_px=0, thicken_px=0, line_width_frac=0.016):
     # Draw thin, crisp contour lines by finding narrow zero-crossings at integer contour levels.
-    smoothed = field.resample('nearest')
+    smoothed = field.resample('bilinear')
     if smooth_px and smooth_px > 0:
         smoothed = smoothed.focalMean(int(smooth_px), 'circle', 'pixels')
     scaled = smoothed.divide(float(interval))
