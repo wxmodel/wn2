@@ -1061,6 +1061,37 @@ def split_dimensions_horizontal(source_dims):
     return source_dims
 
 
+def split_dimensions_horizontal_parts(source_dims, parts=2):
+    parts = max(1, int(parts))
+    if parts == 1:
+        return source_dims
+    if isinstance(source_dims, str) and 'x' in source_dims:
+        w_str, h_str = source_dims.lower().split('x', 1)
+        try:
+            w = int(w_str)
+            h = int(h_str)
+            return f'{max(220, w // parts)}x{max(280, h)}'
+        except ValueError:
+            return source_dims
+    if isinstance(source_dims, int):
+        return max(220, int(source_dims // parts))
+    return source_dims
+
+
+def split_region_longitude(region, parts=2):
+    min_lon, min_lat, max_lon, max_lat = [float(v) for v in region]
+    parts = max(1, int(parts))
+    span = max_lon - min_lon
+    if parts == 1 or span <= 0:
+        return [[min_lon, min_lat, max_lon, max_lat]]
+    bounds = []
+    for i in range(parts):
+        lon0 = min_lon + span * (i / parts)
+        lon1 = min_lon + span * ((i + 1) / parts)
+        bounds.append([lon0, min_lat, lon1, max_lat])
+    return bounds
+
+
 def split_region_west_east(region):
     min_lon, min_lat, max_lon, max_lat = [float(v) for v in region]
     mid_lon = (min_lon + max_lon) * 0.5
@@ -1623,6 +1654,33 @@ def stitch_horizontal(left_file, right_file, out_file):
     stitched.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 
+def stitch_horizontal_many(tile_files, out_file):
+    from PIL import Image
+
+    images = []
+    try:
+        for path in tile_files:
+            with Image.open(path) as src:
+                images.append(src.convert('RGB'))
+        if not images:
+            raise ValueError('No tile files provided for horizontal stitch.')
+        height = min(img.height for img in images)
+        resized = [img.resize((img.width, height)) if img.height != height else img for img in images]
+        total_width = sum(img.width for img in resized)
+        stitched = Image.new('RGB', (total_width, height))
+        x = 0
+        for img in resized:
+            stitched.paste(img, (x, 0))
+            x += img.width
+        stitched.save(out_file, format='JPEG', quality=97, subsampling=0)
+    finally:
+        for img in images:
+            try:
+                img.close()
+            except Exception:
+                pass
+
+
 def export_nh_split_composite(composite, out_file, dimensions, scale=None):
     split_dims = split_nh_dimensions(dimensions)
     west_tmp = f'{out_file}.west_tmp.jpg'
@@ -1712,13 +1770,14 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
 
 
 def generate_z500_anomaly_map(img, h, region, prefix):
+    tile_parts = 4
     if prefix == 'nh_z500a':
         map_dims = NH_SOURCE_DIMS
-        tile_bounds = [NH_W_BOUNDS, NH_E_BOUNDS]
+        tile_bounds = split_region_longitude(NH_SOURCE_REGION, parts=tile_parts)
         default_scale = ANOMALY_NH_SCALE_M
     else:
         map_dims = region_dimensions(ANOMALY_DIMS, region)
-        tile_bounds = list(split_region_west_east(region))
+        tile_bounds = split_region_longitude(region, parts=tile_parts)
         default_scale = ANOMALY_NA_SCALE_M
 
     def _build_tile_composite(
@@ -1890,10 +1949,9 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     out_file = build_frame_path(prefix, h)
     last_msg = ''
     for plan in plans:
-        west_tmp = f'{out_file}.west_tmp.jpg'
-        east_tmp = f'{out_file}.east_tmp.jpg'
+        tile_tmp_files = [f'{out_file}.tile{idx}.jpg' for idx in range(len(tile_bounds))]
         export_scale = (plan.get('scale_m', default_scale) if plan.get('use_scale', True) else None)
-        split_dims = split_dimensions_horizontal(plan.get('dims') or map_dims)
+        split_dims = split_dimensions_horizontal_parts(plan.get('dims') or map_dims, parts=len(tile_bounds))
         try:
             for idx, bounds in enumerate(tile_bounds):
                 tile_geom = ee.Geometry.Rectangle(bounds, geodesic=False)
@@ -1916,17 +1974,16 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                     include_z540=plan.get('include_z540', True),
                     include_border=plan.get('include_border', True),
                 )
-                tile_out = west_tmp if idx == 0 else east_tmp
                 export_composite(
                     tile_composite,
-                    tile_out,
+                    tile_tmp_files[idx],
                     bounds,
                     dimensions=split_dims,
                     scale=export_scale,
                     crs=TARGET_CRS,
                 )
 
-            stitch_horizontal(west_tmp, east_tmp, out_file)
+            stitch_horizontal_many(tile_tmp_files, out_file)
             if prefix == 'nh_z500a':
                 remap_nh_to_polar(out_file, lon0=NH_LON0)
             annotate_map_file(out_file, prefix, h)
@@ -1938,7 +1995,7 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             last_msg = msg
             print(f'[{ts()}] {prefix} hour {h}: true anomaly export retry failed ({plan["label"]}).')
         finally:
-            for tmp in (west_tmp, east_tmp):
+            for tmp in tile_tmp_files:
                 if os.path.exists(tmp):
                     try:
                         os.remove(tmp)
@@ -2264,8 +2321,7 @@ def generate_conus_t2m_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m'):
 
 
 def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m_anom'):
-    west_bounds, east_bounds = split_region_west_east(region)
-    tile_bounds = [west_bounds, east_bounds]
+    tile_bounds = split_region_longitude(region, parts=4)
     base_dims = region_dimensions(CONUS_DIMS, region)
     mid_dims = shrink_dimensions(base_dims)
     low_dims = shrink_dimensions(mid_dims)
@@ -2332,9 +2388,8 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
     out_file = build_frame_path(key, h)
     last_msg = ''
     for plan in plans:
-        west_tmp = f'{out_file}.west_tmp.jpg'
-        east_tmp = f'{out_file}.east_tmp.jpg'
-        split_dims = split_dimensions_horizontal(plan['dims'])
+        tile_tmp_files = [f'{out_file}.tile{idx}.jpg' for idx in range(len(tile_bounds))]
+        split_dims = split_dimensions_horizontal_parts(plan['dims'], parts=len(tile_bounds))
         try:
             for idx, bounds in enumerate(tile_bounds):
                 tile_geom = ee.Geometry.Rectangle(bounds, geodesic=False)
@@ -2362,17 +2417,16 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
                     include_border=plan.get('include_border', True),
                     include_freezing=plan.get('include_freezing', True),
                 )
-                tile_out = west_tmp if idx == 0 else east_tmp
                 export_composite(
                     composite,
-                    tile_out,
+                    tile_tmp_files[idx],
                     bounds,
                     dimensions=split_dims,
                     scale=plan['scale_m'],
                     crs=TARGET_CRS,
                 )
 
-            stitch_horizontal(west_tmp, east_tmp, out_file)
+            stitch_horizontal_many(tile_tmp_files, out_file)
             annotate_map_file(out_file, key, h)
             return
         except Exception as e:
@@ -2382,7 +2436,7 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
             last_msg = msg
             print(f'[{ts()}] {key} hour {h}: anomaly export retry failed ({plan["label"]}).')
         finally:
-            for tmp in (west_tmp, east_tmp):
+            for tmp in tile_tmp_files:
                 if os.path.exists(tmp):
                     try:
                         os.remove(tmp)
