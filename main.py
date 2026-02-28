@@ -205,6 +205,7 @@ snow_ratio_csv_env = os.environ.get('SNOW_RATIO_CSV')
 run_history_hours_env = os.environ.get('RUN_HISTORY_HOURS')
 event_name = (os.environ.get('GITHUB_EVENT_NAME') or '').lower()
 fast_render_env = os.environ.get('FAST_RENDER')
+product_mode_env = os.environ.get('WN2_PRODUCT_MODE')
 run_nh_z500a_env = os.environ.get('WN2_RUN_NH_Z500A')
 run_na_z500a_env = os.environ.get('WN2_RUN_NA_Z500A')
 run_conus_mslp_ptype_env = os.environ.get('WN2_RUN_CONUS_MSLP_PTYPE')
@@ -375,6 +376,8 @@ if not ENABLED_PRODUCTS:
     )
 
 print(f'[{ts()}] Enabled products: {[k for k, _, _ in ENABLED_PRODUCTS]}')
+if product_mode_env:
+    print(f'[{ts()}] Workflow product mode: {product_mode_env}')
 
 
 def cleanup_old_products():
