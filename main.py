@@ -2189,6 +2189,7 @@ cleanup_current_run_products()
 failures = []
 successful_exports = 0
 failed_product_keys = set()
+failed_product_messages = {}
 needs_snow_accum = any(k in SNOW_PRODUCT_KEYS for k, _, _ in ENABLED_PRODUCTS)
 snow_accum_by_hour = {}
 
@@ -2250,6 +2251,10 @@ def _record_task_failure(hour, name, err_msg, exc):
     if product_key is None:
         product_key = name
     failed_product_keys.add(product_key)
+    msg_text = str(err_msg).replace('\n', ' ').strip()
+    if len(msg_text) > 500:
+        msg_text = msg_text[:500] + '...'
+    failed_product_messages[product_key] = msg_text
     if 'earthengine.thumbnails.create' in err_msg:
         raise RuntimeError(
             "Earth Engine permission denied: earthengine.thumbnails.create. "
@@ -2639,6 +2644,11 @@ current_entry = {
     'enabled_products': enabled_product_keys,
     'missing_products': missing_product_keys,
     'failed_products': sorted([key for key in failed_product_keys if key in enabled_product_keys]),
+    'failure_messages': {
+        key: failed_product_messages[key]
+        for key in sorted(failed_product_messages.keys())
+        if key in failed_product_messages
+    },
     'successful_exports': int(successful_exports),
     'failed_exports': len(failures),
     'updated_utc': iso_utc(now_utc),
@@ -2708,6 +2718,11 @@ for entry in [current_entry] + existing_entries:
         'enabled_products': [str(p) for p in entry.get('enabled_products', []) if isinstance(p, str)],
         'missing_products': [str(p) for p in entry.get('missing_products', []) if isinstance(p, str)],
         'failed_products': [str(p) for p in entry.get('failed_products', []) if isinstance(p, str)],
+        'failure_messages': {
+            str(raw_key): str(raw_msg)
+            for raw_key, raw_msg in (entry.get('failure_messages', {}) or {}).items()
+            if isinstance(raw_key, str)
+        },
         'successful_exports': int(_parse_int(entry.get('successful_exports')) or 0),
         'failed_exports': int(_parse_int(entry.get('failed_exports')) or 0),
         'updated_utc': str(entry.get('updated_utc') or iso_utc(now_utc)),
