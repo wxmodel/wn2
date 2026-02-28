@@ -98,7 +98,7 @@ on:
   
 concurrency:
   group: wn2-pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
