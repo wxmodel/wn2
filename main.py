@@ -363,10 +363,12 @@ PRODUCT_OPTIONS = [
     ('ne_zoom_snow_accum', 'New England Zoom Snowfall Accumulation', 'ne_zoom_snow_accum_*.jpg', run_ne_zoom_snow_accum_env),
 ]
 SNOW_PRODUCT_KEYS = {'conus_snow_accum', 'ne_snow_accum', 'ne_zoom_snow_accum'}
+PRODUCT_MODE = (str(product_mode_env or '').strip().lower() or 'all')
+USE_CUSTOM_PRODUCT_SELECTION = (event_name == 'workflow_dispatch' and PRODUCT_MODE == 'custom')
 
 ENABLED_PRODUCTS = []
 for key, label, pattern, raw_flag in PRODUCT_OPTIONS:
-    enabled = _select_product_flag(raw_flag, default=True)
+    enabled = _select_product_flag(raw_flag, default=True) if USE_CUSTOM_PRODUCT_SELECTION else True
     if enabled:
         ENABLED_PRODUCTS.append((key, label, pattern))
 
@@ -377,7 +379,7 @@ if not ENABLED_PRODUCTS:
 
 print(f'[{ts()}] Enabled products: {[k for k, _, _ in ENABLED_PRODUCTS]}')
 if product_mode_env:
-    print(f'[{ts()}] Workflow product mode: {product_mode_env}')
+    print(f'[{ts()}] Workflow product mode: {PRODUCT_MODE} (custom_selection={USE_CUSTOM_PRODUCT_SELECTION})')
 
 
 def cleanup_old_products():
@@ -2631,6 +2633,11 @@ current_entry = {
         for key in current_products
         if key in current_product_snow_ratios
     },
+    'enabled_products': enabled_product_keys,
+    'missing_products': missing_product_keys,
+    'failed_products': sorted([key for key in failed_product_keys if key in enabled_product_keys]),
+    'successful_exports': int(successful_exports),
+    'failed_exports': len(failures),
     'updated_utc': iso_utc(now_utc),
 }
 
@@ -2695,6 +2702,11 @@ for entry in [current_entry] + existing_entries:
         'snow_ratios': snow_ratios,
         'product_hours': product_hours,
         'product_snow_ratios': product_snow_ratios,
+        'enabled_products': [str(p) for p in entry.get('enabled_products', []) if isinstance(p, str)],
+        'missing_products': [str(p) for p in entry.get('missing_products', []) if isinstance(p, str)],
+        'failed_products': [str(p) for p in entry.get('failed_products', []) if isinstance(p, str)],
+        'successful_exports': int(_parse_int(entry.get('successful_exports')) or 0),
+        'failed_exports': int(_parse_int(entry.get('failed_exports')) or 0),
         'updated_utc': str(entry.get('updated_utc') or iso_utc(now_utc)),
     }
 
