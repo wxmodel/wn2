@@ -239,14 +239,14 @@ if FAST_RENDER:
     PTYPE_NE_DIMS = '1200x980'
     SNOW_CONUS_DIMS = '1320x960'
     SNOW_NE_DIMS = '1200x980'
-    NH_SOURCE_DIMS = '1600x320'
+    NH_SOURCE_DIMS = '1400x280'
     NH_POLAR_DIMS = 980
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
     ANOMALY_WORK_SCALE_M = 180000
-    Z500_NH_ANOM_SCALES_M = [100000, 140000, 190000]
-    Z500_NA_ANOM_SCALES_M = [80000, 115000, 155000]
-    T2M_ANOM_WORK_SCALES_M = [32000, 46000, 62000]
+    Z500_NH_ANOM_SCALES_M = [180000, 260000, 360000]
+    Z500_NA_ANOM_SCALES_M = [140000, 220000, 300000]
+    T2M_ANOM_WORK_SCALES_M = [50000, 75000, 110000]
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -255,14 +255,14 @@ else:
     PTYPE_NE_DIMS = '1400x1120'
     SNOW_CONUS_DIMS = '1600x1140'
     SNOW_NE_DIMS = '1400x1120'
-    NH_SOURCE_DIMS = '1800x360'
+    NH_SOURCE_DIMS = '1600x320'
     NH_POLAR_DIMS = 1080
     ANOMALY_NA_SCALE_M = 52000
     ANOMALY_NH_SCALE_M = 76000
     ANOMALY_WORK_SCALE_M = 200000
-    Z500_NH_ANOM_SCALES_M = [90000, 125000, 170000]
-    Z500_NA_ANOM_SCALES_M = [70000, 100000, 140000]
-    T2M_ANOM_WORK_SCALES_M = [28000, 42000, 56000]
+    Z500_NH_ANOM_SCALES_M = [170000, 240000, 330000]
+    Z500_NA_ANOM_SCALES_M = [130000, 200000, 280000]
+    T2M_ANOM_WORK_SCALES_M = [45000, 70000, 100000]
 
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
@@ -1731,15 +1731,6 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         plans = [
             {
                 'use_scale': True,
-                'dims': map_dims,
-                'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[0],
-                'contour_scale_m': contour_scale_base,
-                'minor_interval': Z500_MINOR_CONTOUR_INTERVAL,
-                'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
-                'label': 'split full dims + major/minor contours',
-            },
-            {
-                'use_scale': True,
                 'dims': mid_dims,
                 'anomaly_scale_m': Z500_NH_ANOM_SCALES_M[1],
                 'contour_scale_m': int(contour_scale_base * 1.2),
@@ -1756,6 +1747,15 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 'major_interval': 18,
                 'label': 'split low dims + sparse contours',
             },
+            {
+                'use_scale': True,
+                'dims': low_dims,
+                'anomaly_scale_m': int(Z500_NH_ANOM_SCALES_M[2] * 1.2),
+                'contour_scale_m': int(contour_scale_base * 1.8),
+                'minor_interval': 24,
+                'major_interval': 24,
+                'label': 'split low dims + ultra sparse contours',
+            },
         ]
     else:
         mid_dims = shrink_dimensions(map_dims)
@@ -1764,31 +1764,31 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         plans = [
             {
                 'use_scale': False,
-                'dims': map_dims,
+                'dims': mid_dims,
                 'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[0],
-                'contour_scale_m': int(contour_scale_base * 0.9),
-                'minor_interval': Z500_MINOR_CONTOUR_INTERVAL,
+                'contour_scale_m': int(contour_scale_base * 1.1),
+                'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
                 'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
-                'label': 'dims full + major/minor contours',
+                'label': 'dims mid + major contours',
             },
             {
                 'use_scale': False,
-                'dims': mid_dims,
+                'dims': low_dims,
                 'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[1],
-                'contour_scale_m': contour_scale_base,
-                'minor_interval': Z500_MAJOR_CONTOUR_INTERVAL,
-                'major_interval': Z500_MAJOR_CONTOUR_INTERVAL,
-                'label': 'dims reduced + major contours',
+                'contour_scale_m': int(contour_scale_base * 1.4),
+                'minor_interval': 18,
+                'major_interval': 18,
+                'label': 'dims low + sparse contours',
             },
             {
                 'use_scale': True,
                 'dims': low_dims,
-                'scale_m': int(ANOMALY_NA_SCALE_M * 1.55),
+                'scale_m': int(ANOMALY_NA_SCALE_M * 2.2),
                 'anomaly_scale_m': Z500_NA_ANOM_SCALES_M[2],
-                'contour_scale_m': int(contour_scale_base * 1.35),
-                'minor_interval': 18,
-                'major_interval': 18,
-                'label': 'scale coarse + sparse contours',
+                'contour_scale_m': int(contour_scale_base * 1.8),
+                'minor_interval': 24,
+                'major_interval': 24,
+                'label': 'scale coarse + ultra sparse contours',
             },
         ]
 
@@ -2154,9 +2154,9 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
     mid_dims = shrink_dimensions(base_dims)
     low_dims = shrink_dimensions(mid_dims)
     plans = [
-        {'dims': base_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[0], 'contour_interval': 10, 'label': 'full dims + 10F contours'},
-        {'dims': mid_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[1], 'contour_interval': 12, 'label': 'mid dims + 12F contours'},
-        {'dims': low_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[2], 'contour_interval': 16, 'label': 'low dims + sparse contours'},
+        {'dims': mid_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[0], 'contour_interval': 12, 'label': 'mid dims + 12F contours'},
+        {'dims': low_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[1], 'contour_interval': 18, 'label': 'low dims + sparse contours'},
+        {'dims': low_dims, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[2], 'contour_interval': 24, 'label': 'low dims + ultra sparse contours'},
     ]
 
     def _build_composite(work_scale_m, contour_interval):
