@@ -1011,6 +1011,28 @@ def split_nh_dimensions(source_dims):
     return '1100x440'
 
 
+def split_dimensions_horizontal(source_dims):
+    if isinstance(source_dims, str) and 'x' in source_dims:
+        w_str, h_str = source_dims.lower().split('x', 1)
+        try:
+            w = int(w_str)
+            h = int(h_str)
+            return f'{max(360, w // 2)}x{max(280, h)}'
+        except ValueError:
+            return source_dims
+    if isinstance(source_dims, int):
+        return max(360, int(source_dims // 2))
+    return source_dims
+
+
+def split_region_west_east(region):
+    min_lon, min_lat, max_lon, max_lat = [float(v) for v in region]
+    mid_lon = (min_lon + max_lon) * 0.5
+    west = [min_lon, min_lat, mid_lon, max_lat]
+    east = [mid_lon, min_lat, max_lon, max_lat]
+    return west, east
+
+
 def inset_region_bbox(region, lon_pad=0.6, lat_pad=0.6):
     if not isinstance(region, list) or len(region) != 4:
         return region
@@ -1655,17 +1677,18 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
 
 def generate_z500_anomaly_map(img, h, region, prefix):
     if prefix == 'nh_z500a':
-        region_geom = ee.Geometry.Rectangle(NH_SOURCE_REGION, geodesic=False)
         map_dims = NH_SOURCE_DIMS
+        tile_bounds = [NH_W_BOUNDS, NH_E_BOUNDS]
+        default_scale = ANOMALY_NH_SCALE_M
     else:
-        region_geom = ee.Geometry.Rectangle(region, geodesic=False)
         map_dims = region_dimensions(ANOMALY_DIMS, region)
+        tile_bounds = list(split_region_west_east(region))
+        default_scale = ANOMALY_NA_SCALE_M
 
-    forecast_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
-    contour_field = forecast_height_dam
-
-    def _build_composite(
+    def _build_tile_composite(
+        tile_geom,
         anomaly_field,
+        contour_field,
         anomaly_scale_m,
         contour_scale_m,
         minor_interval=Z500_MINOR_CONTOUR_INTERVAL,
@@ -1673,76 +1696,49 @@ def generate_z500_anomaly_map(img, h, region, prefix):
     ):
         anomaly_for_render = _coarsen_for_compute(anomaly_field, anomaly_scale_m, min_scale_m=25000)
         contour_for_render = _coarsen_for_compute(contour_field, contour_scale_m, min_scale_m=25000)
-        anomaly_layer = anomaly_overlay(anomaly_for_render)
         overlays = [
-            flat_background_overlay(region_geom, color=BASEMAP_OCEAN_COLOR),
-            anomaly_layer,
+            flat_background_overlay(tile_geom, color=BASEMAP_OCEAN_COLOR),
+            anomaly_overlay(anomaly_for_render),
         ]
         if minor_interval and int(minor_interval) < int(major_interval):
-            z500_minor = contour_overlay(
-                contour_for_render,
-                interval=minor_interval,
-                color='#202020',
-                opacity=0.38,
-                smooth_px=0,
-                thicken_px=0,
-                line_width_frac=0.006,
+            overlays.append(
+                contour_overlay(
+                    contour_for_render,
+                    interval=minor_interval,
+                    color='#202020',
+                    opacity=0.38,
+                    smooth_px=0,
+                    thicken_px=0,
+                    line_width_frac=0.006,
+                )
             )
-            overlays.append(z500_minor)
-        z500_major = contour_overlay(
-            contour_for_render,
-            interval=major_interval,
-            color='#121212',
-            opacity=0.92,
-            smooth_px=0,
-            thicken_px=0,
-            line_width_frac=0.009,
-        )
-        z540_contour = highlight_iso_overlay(
-            contour_for_render,
-            level=540,
-            color='#2455ff',
-            opacity=0.92,
-            tolerance=1.0,
-            smooth_px=0,
-        )
         overlays.extend(
             [
-                z500_major,
-                z540_contour,
+                contour_overlay(
+                    contour_for_render,
+                    interval=major_interval,
+                    color='#121212',
+                    opacity=0.92,
+                    smooth_px=0,
+                    thicken_px=0,
+                    line_width_frac=0.009,
+                ),
+                highlight_iso_overlay(
+                    contour_for_render,
+                    level=540,
+                    color='#2455ff',
+                    opacity=0.92,
+                    tolerance=1.0,
+                    smooth_px=0,
+                ),
                 border_overlay(
                     include_states=False,
-                    region_geom=region_geom,
-                    detailed=(prefix not in ('nh_z500a', 'na_z500a')),
+                    region_geom=tile_geom,
+                    detailed=False,
                 ),
             ]
         )
         return ee.ImageCollection(overlays).mosaic()
-
-    def _export_and_annotate(composite_image, use_scale=True, dims_override=None, scale_override=None):
-        out_file = build_frame_path(prefix, h)
-        if prefix == 'nh_z500a':
-            nh_dims = dims_override if dims_override is not None else (map_dims if use_scale else shrink_dimensions(map_dims))
-            nh_scale = (scale_override if scale_override is not None else ANOMALY_NH_SCALE_M) if use_scale else None
-            export_nh_split_composite(
-                composite_image,
-                out_file,
-                dimensions=nh_dims,
-                scale=nh_scale,
-            )
-            remap_nh_to_polar(out_file, lon0=NH_LON0)
-            annotate_map_file(out_file, prefix, h)
-            return
-
-        export_dims = dims_override if dims_override is not None else map_dims
-        export_composite(
-            composite_image,
-            out_file,
-            region,
-            dimensions=export_dims,
-            scale=((scale_override if scale_override is not None else ANOMALY_NA_SCALE_M) if use_scale else None),
-        )
-        annotate_map_file(out_file, prefix, h)
 
     def _is_recoverable_export_error(msg):
         return (
@@ -1825,28 +1821,47 @@ def generate_z500_anomaly_map(img, h, region, prefix):
             },
         ]
 
+    out_file = build_frame_path(prefix, h)
     last_msg = ''
     for plan in plans:
+        west_tmp = f'{out_file}.west_tmp.jpg'
+        east_tmp = f'{out_file}.east_tmp.jpg'
+        export_scale = (plan.get('scale_m', default_scale) if plan.get('use_scale', True) else None)
+        split_dims = split_dimensions_horizontal(plan.get('dims') or map_dims)
         try:
-            true_anomaly = z500_anomaly_m(
-                img,
-                h,
-                region_geom=region_geom,
-                cache_tag=f'{prefix}_{plan["anomaly_scale_m"]}',
-                analysis_scale_m=plan['anomaly_scale_m'],
-            )
-            _export_and_annotate(
-                _build_composite(
-                    true_anomaly,
+            for idx, bounds in enumerate(tile_bounds):
+                tile_geom = ee.Geometry.Rectangle(bounds, geodesic=False)
+                contour_tile = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(tile_geom)
+                anomaly_tile = z500_anomaly_m(
+                    img,
+                    h,
+                    region_geom=tile_geom,
+                    cache_tag=f'{prefix}_{plan["anomaly_scale_m"]}_{idx}',
+                    analysis_scale_m=plan['anomaly_scale_m'],
+                )
+                tile_composite = _build_tile_composite(
+                    tile_geom=tile_geom,
+                    anomaly_field=anomaly_tile,
+                    contour_field=contour_tile,
                     anomaly_scale_m=plan['anomaly_scale_m'],
                     contour_scale_m=plan['contour_scale_m'],
                     minor_interval=plan['minor_interval'],
                     major_interval=plan['major_interval'],
-                ),
-                use_scale=plan['use_scale'],
-                dims_override=plan['dims'],
-                scale_override=plan.get('scale_m'),
-            )
+                )
+                tile_out = west_tmp if idx == 0 else east_tmp
+                export_composite(
+                    tile_composite,
+                    tile_out,
+                    bounds,
+                    dimensions=split_dims,
+                    scale=export_scale,
+                    crs=TARGET_CRS,
+                )
+
+            stitch_horizontal(west_tmp, east_tmp, out_file)
+            if prefix == 'nh_z500a':
+                remap_nh_to_polar(out_file, lon0=NH_LON0)
+            annotate_map_file(out_file, prefix, h)
             return
         except Exception as e:
             msg = str(e)
@@ -1854,6 +1869,13 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 raise
             last_msg = msg
             print(f'[{ts()}] {prefix} hour {h}: true anomaly export retry failed ({plan["label"]}).')
+        finally:
+            for tmp in (west_tmp, east_tmp):
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
 
     short_msg = (last_msg or 'Unknown export error').replace('\n', ' ')[:220]
     raise RuntimeError(
@@ -2174,14 +2196,8 @@ def generate_conus_t2m_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m'):
 
 
 def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m_anom'):
-    region_geom = ee.Geometry.Rectangle(region, geodesic=False)
-    t2m_f = (
-        img.select(WN2_T2M_BAND)
-        .subtract(273.15)
-        .multiply(9.0 / 5.0)
-        .add(32.0)
-        .clip(region_geom)
-    )
+    west_bounds, east_bounds = split_region_west_east(region)
+    tile_bounds = [west_bounds, east_bounds]
     base_dims = region_dimensions(CONUS_DIMS, region)
     mid_dims = shrink_dimensions(base_dims)
     low_dims = shrink_dimensions(mid_dims)
@@ -2191,7 +2207,7 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
         {'dims': low_dims, 'scale_m': 56000, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[2], 'contour_interval': 24, 'label': 'ultra coarse scale + ultra sparse contours'},
     ]
 
-    def _build_composite(t2m_anom_f, work_scale_m, contour_interval):
+    def _build_composite(tile_geom, t2m_anom_f, t2m_f, work_scale_m, contour_interval):
         anom_field = _coarsen_for_compute(t2m_anom_f, work_scale_m, min_scale_m=15000)
         contour_field = _coarsen_for_compute(t2m_f, max(work_scale_m, 28000), min_scale_m=20000)
         t2m_anom_vis = anom_field.resample('bilinear').focalMean(1, 'circle', 'pixels')
@@ -2217,11 +2233,11 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
             smooth_px=0,
         )
         return ee.ImageCollection([
-            flat_background_overlay(region_geom, color=BASEMAP_OCEAN_COLOR),
+            flat_background_overlay(tile_geom, color=BASEMAP_OCEAN_COLOR),
             t2m_anom_layer,
             temp_contours,
             freezing_line,
-            border_overlay(include_states=True),
+            border_overlay(include_states=True, region_geom=tile_geom),
         ]).mosaic()
 
     def _is_recoverable_export_error(msg):
@@ -2235,27 +2251,45 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
     out_file = build_frame_path(key, h)
     last_msg = ''
     for plan in plans:
+        west_tmp = f'{out_file}.west_tmp.jpg'
+        east_tmp = f'{out_file}.east_tmp.jpg'
+        split_dims = split_dimensions_horizontal(plan['dims'])
         try:
-            t2m_anom_c = t2m_anomaly_c(
-                img,
-                h,
-                region_geom=region_geom,
-                cache_tag=f'{key}_{plan["work_scale_m"]}',
-                analysis_scale_m=plan['work_scale_m'],
-            )
-            t2m_anom_f = t2m_anom_c.multiply(9.0 / 5.0).rename('t2m_anomaly_f')
-            composite = _build_composite(
-                t2m_anom_f=t2m_anom_f,
-                work_scale_m=plan['work_scale_m'],
-                contour_interval=plan['contour_interval'],
-            )
-            export_composite(
-                composite,
-                out_file,
-                region,
-                dimensions=plan['dims'],
-                scale=plan['scale_m'],
-            )
+            for idx, bounds in enumerate(tile_bounds):
+                tile_geom = ee.Geometry.Rectangle(bounds, geodesic=False)
+                t2m_f = (
+                    img.select(WN2_T2M_BAND)
+                    .subtract(273.15)
+                    .multiply(9.0 / 5.0)
+                    .add(32.0)
+                    .clip(tile_geom)
+                )
+                t2m_anom_c = t2m_anomaly_c(
+                    img,
+                    h,
+                    region_geom=tile_geom,
+                    cache_tag=f'{key}_{plan["work_scale_m"]}_{idx}',
+                    analysis_scale_m=plan['work_scale_m'],
+                )
+                t2m_anom_f = t2m_anom_c.multiply(9.0 / 5.0).rename('t2m_anomaly_f')
+                composite = _build_composite(
+                    tile_geom=tile_geom,
+                    t2m_anom_f=t2m_anom_f,
+                    t2m_f=t2m_f,
+                    work_scale_m=plan['work_scale_m'],
+                    contour_interval=plan['contour_interval'],
+                )
+                tile_out = west_tmp if idx == 0 else east_tmp
+                export_composite(
+                    composite,
+                    tile_out,
+                    bounds,
+                    dimensions=split_dims,
+                    scale=plan['scale_m'],
+                    crs=TARGET_CRS,
+                )
+
+            stitch_horizontal(west_tmp, east_tmp, out_file)
             annotate_map_file(out_file, key, h)
             return
         except Exception as e:
@@ -2264,6 +2298,13 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
                 raise
             last_msg = msg
             print(f'[{ts()}] {key} hour {h}: anomaly export retry failed ({plan["label"]}).')
+        finally:
+            for tmp in (west_tmp, east_tmp):
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
 
     short_msg = (last_msg or 'Unknown export error').replace('\n', ' ')[:220]
     raise RuntimeError(f'{key} hour {h}: true-anomaly export failed after retries. Last error: {short_msg}')
