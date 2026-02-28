@@ -877,25 +877,6 @@ def _wrap_day_of_year_filter(start_doy, end_doy):
     )
 
 
-def _build_dayhour_climo_collection(base_collection, valid_utc, hour, band_name, region_geom=None):
-    sample_images = []
-    sample_years = []
-    for year in range(CLIMO_START_YEAR, CLIMO_END_YEAR + 1):
-        try:
-            start_dt = datetime(year, int(valid_utc.month), int(valid_utc.day), int(hour), tzinfo=timezone.utc)
-        except ValueError:
-            continue
-        end_dt = start_dt + timedelta(hours=1)
-        subset = base_collection.filterDate(format_utc_timestamp(start_dt), format_utc_timestamp(end_dt))
-        empty = ee.Image.constant(0).rename(band_name).updateMask(ee.Image.constant(0))
-        sample = ee.Image(ee.Algorithms.If(subset.size().gt(0), subset.mean().select(band_name), empty))
-        if region_geom is not None:
-            sample = sample.clip(region_geom)
-        sample_images.append(sample)
-        sample_years.append(year)
-    return ee.ImageCollection.fromImages(sample_images), sample_years
-
-
 def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global', analysis_scale_m=None):
     doy = valid_utc.timetuple().tm_yday
     hour = int(valid_utc.hour)
@@ -906,24 +887,27 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global', anal
         return cached
 
     hour_collection = CLIMO_H500_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
-    window_collection, sample_years = _build_dayhour_climo_collection(
-        hour_collection,
-        valid_utc,
-        hour,
-        CLIMO_H500_BAND,
-        region_geom=region_geom,
-    )
-    fallback_collection = hour_collection.filter(
+    hour_collection = _clip_collection_to_region(hour_collection, region_geom)
+    if CLIMO_DOY_WINDOW_DAYS <= 0:
+        window_collection = hour_collection.filter(
+            ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+        ).filter(
+            ee.Filter.calendarRange(int(valid_utc.day), int(valid_utc.day), 'day_of_month')
+        )
+    else:
+        start_doy = doy - CLIMO_DOY_WINDOW_DAYS
+        end_doy = doy + CLIMO_DOY_WINDOW_DAYS
+        window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
+    fallback_collection = CLIMO_H500_COLLECTION.filter(
         ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
-    )
+    ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
     size_log_key = ('h500', int(valid_utc.month), int(valid_utc.day), hour)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
             window_n = int(window_collection.size().getInfo())
             fallback_n = int(fallback_collection.size().getInfo())
-            years_text = f'{sample_years[0]}-{sample_years[-1]}' if sample_years else 'none'
-            print(f'[{ts()}] H500 climo sample count exact day/hour={window_n} (years {years_text}), fallback month/hour={fallback_n}.')
+            print(f'[{ts()}] H500 climo sample count month/day/hour={window_n}, fallback month/hour={fallback_n}.')
         except Exception as e:
             print(f'[{ts()}] H500 climo sample-count check skipped: {e}')
         CLIMO_SIZE_LOGGED.add(size_log_key)
@@ -971,24 +955,27 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analy
         return cached
 
     hour_collection = CLIMO_T2M_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
-    window_collection, sample_years = _build_dayhour_climo_collection(
-        hour_collection,
-        valid_utc,
-        hour,
-        'T2M',
-        region_geom=region_geom,
-    )
-    fallback_collection = hour_collection.filter(
+    hour_collection = _clip_collection_to_region(hour_collection, region_geom)
+    if CLIMO_DOY_WINDOW_DAYS <= 0:
+        window_collection = hour_collection.filter(
+            ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+        ).filter(
+            ee.Filter.calendarRange(int(valid_utc.day), int(valid_utc.day), 'day_of_month')
+        )
+    else:
+        start_doy = doy - CLIMO_DOY_WINDOW_DAYS
+        end_doy = doy + CLIMO_DOY_WINDOW_DAYS
+        window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
+    fallback_collection = CLIMO_T2M_COLLECTION.filter(
         ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
-    )
+    ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
     size_log_key = ('t2m', int(valid_utc.month), int(valid_utc.day), hour)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
             window_n = int(window_collection.size().getInfo())
             fallback_n = int(fallback_collection.size().getInfo())
-            years_text = f'{sample_years[0]}-{sample_years[-1]}' if sample_years else 'none'
-            print(f'[{ts()}] T2M climo sample count exact day/hour={window_n} (years {years_text}), fallback month/hour={fallback_n}.')
+            print(f'[{ts()}] T2M climo sample count month/day/hour={window_n}, fallback month/hour={fallback_n}.')
         except Exception as e:
             print(f'[{ts()}] T2M climo sample-count check skipped: {e}')
         CLIMO_SIZE_LOGGED.add(size_log_key)
