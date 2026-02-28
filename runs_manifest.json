@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-02-28T03:27:57Z",
+  "generated_utc": "2026-02-28T03:35:18Z",
   "history_hours": 24,
   "default_run_id": "2026022706",
   "snow_products": [
@@ -70,7 +70,38 @@
           20
         ]
       },
-      "updated_utc": "2026-02-28T03:27:57Z"
+      "enabled_products": [
+        "nh_z500a",
+        "na_z500a",
+        "conus_mslp_ptype",
+        "ne_mslp_ptype",
+        "conus_vort500",
+        "conus_t2m",
+        "conus_t2m_anom",
+        "conus_snow_accum",
+        "ne_snow_accum",
+        "ne_zoom_snow_accum"
+      ],
+      "missing_products": [
+        "nh_z500a",
+        "na_z500a",
+        "conus_mslp_ptype",
+        "ne_mslp_ptype",
+        "conus_vort500",
+        "conus_t2m",
+        "conus_t2m_anom"
+      ],
+      "failed_products": [
+        "conus_mslp_ptype",
+        "conus_t2m",
+        "conus_vort500",
+        "na_z500a",
+        "ne_mslp_ptype",
+        "nh_z500a"
+      ],
+      "successful_exports": 12,
+      "failed_exports": 7,
+      "updated_utc": "2026-02-28T03:35:18Z"
     },
     {
       "id": "2026022712",
@@ -150,6 +181,11 @@
           20
         ]
       },
+      "enabled_products": [],
+      "missing_products": [],
+      "failed_products": [],
+      "successful_exports": 0,
+      "failed_exports": 0,
       "updated_utc": "2026-02-27T23:52:42Z"
     },
     {
@@ -218,6 +254,11 @@
           20
         ]
       },
+      "enabled_products": [],
+      "missing_products": [],
+      "failed_products": [],
+      "successful_exports": 0,
+      "failed_exports": 0,
       "updated_utc": "2026-02-27T16:26:10Z"
     }
   ]
