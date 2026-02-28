@@ -402,6 +402,31 @@ def cleanup_old_products():
     print(f'[{ts()}] Removed {removed} stale product image(s).')
 
 
+def cleanup_current_run_products():
+    run_patterns = [
+        'nh_z500a_*.jpg',
+        'na_z500a_*.jpg',
+        'conus_mslp_ptype_*.jpg',
+        'ne_mslp_ptype_*.jpg',
+        'conus_vort500_*.jpg',
+        'conus_t2m_*.jpg',
+        'conus_t2m_anom_*.jpg',
+        'conus_snow_accum_*.jpg',
+        'ne_snow_accum_*.jpg',
+        'ne_zoom_snow_accum_*.jpg',
+    ]
+    removed = 0
+    for pattern in run_patterns:
+        for path in RUN_OUTPUT_DIR.glob(pattern):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        print(f'[{ts()}] Cleared {removed} stale frame(s) from current run directory: {RUN_OUTPUT_DIR}')
+
+
 def filter_forecast_hour(ic, h):
     return ic.filter(
         ee.Filter.Or(
@@ -2158,6 +2183,7 @@ def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg", require_variat
 
 # --- 4. EXECUTION ---
 cleanup_old_products()
+cleanup_current_run_products()
 failures = []
 successful_exports = 0
 failed_product_keys = set()
@@ -2226,16 +2252,31 @@ def _record_task_failure(hour, name, err_msg, exc):
         ) from exc
 
 
-def write_step_summary(success_count, failure_items):
+def write_step_summary(
+    success_count,
+    failure_items,
+    enabled_products=None,
+    generated_products=None,
+    missing_products=None,
+):
     summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
     if not summary_path:
         return
     try:
+        enabled_products = list(enabled_products or [])
+        generated_products = list(generated_products or [])
+        missing_products = list(missing_products or [])
         lines = [
             '## WeatherNext2 Render Summary',
             f'- Successful exports: {int(success_count)}',
             f'- Failed exports: {len(failure_items)}',
         ]
+        if enabled_products:
+            lines.append(f'- Enabled products: {", ".join(enabled_products)}')
+        if generated_products:
+            lines.append(f'- Products with frames generated: {", ".join(generated_products)}')
+        if missing_products:
+            lines.append(f'- Missing products (no frames): {", ".join(missing_products)}')
         if failure_items:
             lines.append('')
             lines.append('### Failures')
@@ -2350,6 +2391,7 @@ if failures:
     for h, msg in failures:
         print(f'[{ts()}] Failure summary - hour {h}: {msg}')
 
+generated_product_keys = []
 if successful_exports > 0:
     for key, _, pattern in ENABLED_PRODUCTS:
         product_files = sorted(Path(RUN_OUTPUT_DIR).glob(pattern))
@@ -2364,10 +2406,25 @@ if successful_exports > 0:
             pattern=pattern,
             require_variation=not is_snow_product(key),
         )
+        generated_product_keys.append(key)
 else:
     print(f'[{ts()}] Skipping sanity check: no product images were created.')
 
-write_step_summary(successful_exports, failures)
+enabled_product_keys = [key for key, _, _ in ENABLED_PRODUCTS]
+missing_product_keys = [key for key in enabled_product_keys if key not in generated_product_keys]
+if missing_product_keys:
+    print(
+        f'[{ts()}] Product coverage warning: missing frames for {missing_product_keys}; '
+        f'generated={generated_product_keys}'
+    )
+
+write_step_summary(
+    successful_exports,
+    failures,
+    enabled_products=enabled_product_keys,
+    generated_products=generated_product_keys,
+    missing_products=missing_product_keys,
+)
 
 
 # --- 5. BUILD INTERFACE ---
@@ -2538,6 +2595,13 @@ def choose_default_run_id(manifest_runs, fallback_id):
 
 manifest_path = Path(OUTPUT) / 'runs_manifest.json'
 existing_entries = load_manifest_entries(manifest_path)
+same_run_existing_count = sum(1 for item in existing_entries if str(item.get('id', '')).strip() == RUN_ID)
+if same_run_existing_count:
+    existing_entries = [item for item in existing_entries if str(item.get('id', '')).strip() != RUN_ID]
+    print(
+        f'[{ts()}] Ignoring {same_run_existing_count} existing manifest entr'
+        f'{"y" if same_run_existing_count == 1 else "ies"} for current RUN_ID {RUN_ID}.'
+    )
 now_utc = datetime.now(timezone.utc)
 cutoff_utc = now_utc - timedelta(hours=RUN_HISTORY_HOURS)
 enabled_keys = [key for key, _, _ in ENABLED_PRODUCTS]
