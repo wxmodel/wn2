@@ -216,6 +216,7 @@ run_ne_snow_accum_env = os.environ.get('WN2_RUN_NE_SNOW_ACCUM')
 run_ne_zoom_snow_accum_env = os.environ.get('WN2_RUN_NE_ZOOM_SNOW_ACCUM')
 run_conus_t2m_env = os.environ.get('WN2_RUN_CONUS_T2M')
 run_conus_t2m_anom_env = os.environ.get('WN2_RUN_CONUS_T2M_ANOM')
+local_true_anom_render_env = os.environ.get('WN2_LOCAL_TRUE_ANOM_RENDER')
 
 
 def _env_flag(raw, default=False):
@@ -229,6 +230,8 @@ def _select_product_flag(raw, default=True):
         return default
     return _env_flag(raw, default=default)
 
+
+LOCAL_TRUE_ANOMALY_RENDER = _env_flag(local_true_anom_render_env, default=True)
 
 FAST_RENDER = _env_flag(fast_render_env, default=(event_name == 'schedule'))
 if FAST_RENDER:
@@ -247,6 +250,9 @@ if FAST_RENDER:
     Z500_NH_ANOM_SCALES_M = [260000, 360000, 480000]
     Z500_NA_ANOM_SCALES_M = [200000, 300000, 420000]
     T2M_ANOM_WORK_SCALES_M = [70000, 110000, 150000]
+    LOCAL_Z500_NH_SCALES_M = [130000, 180000, 240000]
+    LOCAL_Z500_NA_SCALES_M = [110000, 150000, 210000]
+    LOCAL_T2M_ANOM_SCALES_M = [45000, 65000, 95000]
 else:
     ANOMALY_DIMS = '1200x880'
     CONUS_DIMS = '1400x1000'
@@ -263,6 +269,9 @@ else:
     Z500_NH_ANOM_SCALES_M = [240000, 340000, 460000]
     Z500_NA_ANOM_SCALES_M = [180000, 280000, 380000]
     T2M_ANOM_WORK_SCALES_M = [65000, 100000, 140000]
+    LOCAL_Z500_NH_SCALES_M = [90000, 130000, 180000]
+    LOCAL_Z500_NA_SCALES_M = [70000, 105000, 150000]
+    LOCAL_T2M_ANOM_SCALES_M = [30000, 45000, 70000]
 
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
@@ -280,10 +289,10 @@ ANOMALY_PALETTE = [
 ]
 ANOMALY_NEG_PALETTE = ['#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#9fd7f5']
 ANOMALY_POS_PALETTE = ['#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16']
-ANOMALY_MIN_M = -240
-ANOMALY_MAX_M = 240
+ANOMALY_MIN_M = -300
+ANOMALY_MAX_M = 300
 ANOMALY_NEUTRAL_M = 6
-ANOMALY_DISPLAY_GAIN = 1.85
+ANOMALY_DISPLAY_GAIN = 1.25
 ANOMALY_SMOOTH_RADIUS_PX = 0
 BASEMAP_LAND_COLOR = '#e6ebef'
 BASEMAP_OCEAN_COLOR = '#d6dde4'
@@ -356,6 +365,8 @@ CLIMO_T2M_COLLECTION = (
 )
 CLIMO_T2M_CACHE = {}
 CLIMO_SIZE_LOGGED = set()
+CLIMO_COUNT_CACHE = {}
+LOCAL_CLIMO_ARRAY_CACHE = {}
 
 PRODUCT_OPTIONS = [
     ('nh_z500a', 'NH 500mb Height Anomaly', 'nh_z500a_*.jpg', run_nh_z500a_env),
@@ -879,6 +890,8 @@ def _wrap_day_of_year_filter(start_doy, end_doy):
 
 def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global', analysis_scale_m=None):
     doy = valid_utc.timetuple().tm_yday
+    month = int(valid_utc.month)
+    day = int(valid_utc.day)
     hour = int(valid_utc.hour)
     scale_key = int(max(25000, float(analysis_scale_m))) if analysis_scale_m is not None else None
     cache_key = (doy, hour, cache_tag, scale_key)
@@ -890,34 +903,33 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global', anal
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     if CLIMO_DOY_WINDOW_DAYS <= 0:
         window_collection = hour_collection.filter(
-            ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+            ee.Filter.calendarRange(month, month, 'month')
         ).filter(
-            ee.Filter.calendarRange(int(valid_utc.day), int(valid_utc.day), 'day_of_month')
+            ee.Filter.calendarRange(day, day, 'day_of_month')
         )
     else:
         start_doy = doy - CLIMO_DOY_WINDOW_DAYS
         end_doy = doy + CLIMO_DOY_WINDOW_DAYS
         window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
     fallback_collection = CLIMO_H500_COLLECTION.filter(
-        ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+        ee.Filter.calendarRange(month, month, 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
-    size_log_key = ('h500', int(valid_utc.month), int(valid_utc.day), hour)
+    count_key = ('h500', month, day, hour)
+    window_n = CLIMO_COUNT_CACHE.get(count_key)
+    if window_n is None:
+        window_n = int(window_collection.size().getInfo())
+        CLIMO_COUNT_CACHE[count_key] = window_n
+    size_log_key = ('h500', month, day, hour)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
-            window_n = int(window_collection.size().getInfo())
             fallback_n = int(fallback_collection.size().getInfo())
             print(f'[{ts()}] H500 climo sample count month/day/hour={window_n}, fallback month/hour={fallback_n}.')
         except Exception as e:
             print(f'[{ts()}] H500 climo sample-count check skipped: {e}')
         CLIMO_SIZE_LOGGED.add(size_log_key)
-    climo = ee.Image(
-        ee.Algorithms.If(
-            window_collection.size().gt(0),
-            window_collection.mean(),
-            fallback_collection.mean(),
-        )
-    ).rename('z500_climo_m').resample('bilinear')
+    climo_source = window_collection if window_n > 0 else fallback_collection
+    climo = ee.Image(climo_source.mean()).rename('z500_climo_m').resample('bilinear')
     if analysis_scale_m is not None:
         climo = _coarsen_for_compute(climo, analysis_scale_m, min_scale_m=25000)
     CLIMO_H500_CACHE[cache_key] = climo
@@ -950,6 +962,8 @@ def z500_anomaly_m(img, hour, region_geom=None, cache_tag='global', analysis_sca
 
 def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analysis_scale_m=None):
     doy = valid_utc.timetuple().tm_yday
+    month = int(valid_utc.month)
+    day = int(valid_utc.day)
     hour = int(valid_utc.hour)
     scale_key = int(max(15000, float(analysis_scale_m))) if analysis_scale_m is not None else None
     cache_key = (doy, hour, cache_tag, scale_key)
@@ -961,34 +975,33 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analy
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     if CLIMO_DOY_WINDOW_DAYS <= 0:
         window_collection = hour_collection.filter(
-            ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+            ee.Filter.calendarRange(month, month, 'month')
         ).filter(
-            ee.Filter.calendarRange(int(valid_utc.day), int(valid_utc.day), 'day_of_month')
+            ee.Filter.calendarRange(day, day, 'day_of_month')
         )
     else:
         start_doy = doy - CLIMO_DOY_WINDOW_DAYS
         end_doy = doy + CLIMO_DOY_WINDOW_DAYS
         window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
     fallback_collection = CLIMO_T2M_COLLECTION.filter(
-        ee.Filter.calendarRange(int(valid_utc.month), int(valid_utc.month), 'month')
+        ee.Filter.calendarRange(month, month, 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
-    size_log_key = ('t2m', int(valid_utc.month), int(valid_utc.day), hour)
+    count_key = ('t2m', month, day, hour)
+    window_n = CLIMO_COUNT_CACHE.get(count_key)
+    if window_n is None:
+        window_n = int(window_collection.size().getInfo())
+        CLIMO_COUNT_CACHE[count_key] = window_n
+    size_log_key = ('t2m', month, day, hour)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
-            window_n = int(window_collection.size().getInfo())
             fallback_n = int(fallback_collection.size().getInfo())
             print(f'[{ts()}] T2M climo sample count month/day/hour={window_n}, fallback month/hour={fallback_n}.')
         except Exception as e:
             print(f'[{ts()}] T2M climo sample-count check skipped: {e}')
         CLIMO_SIZE_LOGGED.add(size_log_key)
-    climo_k = ee.Image(
-        ee.Algorithms.If(
-            window_collection.size().gt(0),
-            window_collection.mean(),
-            fallback_collection.mean(),
-        )
-    ).rename('t2m_climo_k').resample('bilinear')
+    climo_source = window_collection if window_n > 0 else fallback_collection
+    climo_k = ee.Image(climo_source.mean()).rename('t2m_climo_k').resample('bilinear')
     if analysis_scale_m is not None:
         climo_k = _coarsen_for_compute(climo_k, analysis_scale_m, min_scale_m=15000)
     climo_c = climo_k.subtract(273.15).rename('t2m_climo_c')
@@ -1137,6 +1150,367 @@ def region_dimensions(base_dims, region):
     height = int(round(width / aspect))
     height = max(360, min(2200, height))
     return f'{width}x{height}'
+
+
+def parse_dimensions(dimensions, fallback_w=1200, fallback_h=900):
+    if isinstance(dimensions, int):
+        w = max(200, int(dimensions))
+        return w, max(200, int(fallback_h))
+    if isinstance(dimensions, str) and 'x' in dimensions:
+        w_str, h_str = dimensions.lower().split('x', 1)
+        try:
+            return max(200, int(w_str)), max(200, int(h_str))
+        except ValueError:
+            return fallback_w, fallback_h
+    return fallback_w, fallback_h
+
+
+def _is_memory_or_invalid_argument_error(msg):
+    text = str(msg)
+    return (
+        'User memory limit exceeded' in text
+        or 'INVALID_ARGUMENT' in text
+        or 'Invalid argument' in text
+    )
+
+
+def _sample_rect_array(field_img, band_name, bounds, base_scale_m, max_attempts=4, context=''):
+    import numpy as np
+
+    geom = ee.Geometry.Rectangle(bounds, geodesic=False)
+    current_scale = int(max(20000, float(base_scale_m)))
+    fill_value = -9999.0
+    last_msg = ''
+
+    for _attempt in range(1, max_attempts + 1):
+        try:
+            sampled = (
+                ee.Image(field_img)
+                .select(band_name)
+                .toFloat()
+                .resample('bilinear')
+                .reproject(crs=TARGET_CRS, scale=current_scale)
+                .clip(geom)
+            )
+            info = sampled.sampleRectangle(region=geom, defaultValue=fill_value).getInfo()
+            raw = (info or {}).get('properties', {}).get(band_name)
+            if raw is None:
+                raise RuntimeError(f'Sampled rectangle missing band "{band_name}".')
+            arr = np.array(raw, dtype=np.float32)
+            if arr.ndim != 2 or arr.size == 0:
+                raise RuntimeError(f'Invalid sampled array shape for "{band_name}": {arr.shape}')
+            arr[arr <= (fill_value + 0.5)] = np.nan
+            # Normalize to north-up rows for plotting.
+            if arr.shape[0] > 1:
+                top_row = arr[0, :]
+                bottom_row = arr[-1, :]
+                if np.isfinite(top_row).any() and np.isfinite(bottom_row).any():
+                    top = float(np.nanmean(top_row))
+                    bot = float(np.nanmean(bottom_row))
+                    if top < bot:
+                        arr = np.flipud(arr)
+            return arr, current_scale
+        except Exception as e:
+            last_msg = str(e)
+            if _attempt < max_attempts and _is_memory_or_invalid_argument_error(last_msg):
+                current_scale = int(current_scale * 1.55)
+                continue
+            label = context or f'band {band_name}'
+            raise RuntimeError(
+                f'sampleRectangle failed for {label} at scale {current_scale}m: {last_msg}'
+            ) from e
+
+    label = context or f'band {band_name}'
+    raise RuntimeError(
+        f'sampleRectangle failed for {label} after retries. Last error: {last_msg}'
+    )
+
+
+def _select_climo_source_collection(base_collection, valid_utc, region_geom, count_cache_prefix):
+    month = int(valid_utc.month)
+    day = int(valid_utc.day)
+    hour = int(valid_utc.hour)
+    doy = valid_utc.timetuple().tm_yday
+
+    hour_collection = base_collection.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    hour_collection = _clip_collection_to_region(hour_collection, region_geom)
+    if CLIMO_DOY_WINDOW_DAYS <= 0:
+        window_collection = hour_collection.filter(
+            ee.Filter.calendarRange(month, month, 'month')
+        ).filter(
+            ee.Filter.calendarRange(day, day, 'day_of_month')
+        )
+    else:
+        start_doy = doy - CLIMO_DOY_WINDOW_DAYS
+        end_doy = doy + CLIMO_DOY_WINDOW_DAYS
+        window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
+
+    fallback_collection = base_collection.filter(
+        ee.Filter.calendarRange(month, month, 'month')
+    ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
+
+    count_key = (count_cache_prefix, month, day, hour)
+    window_n = CLIMO_COUNT_CACHE.get(count_key)
+    if window_n is None:
+        window_n = int(window_collection.size().getInfo())
+        CLIMO_COUNT_CACHE[count_key] = window_n
+    size_log_key = (count_cache_prefix, month, day, hour)
+    if size_log_key not in CLIMO_SIZE_LOGGED:
+        try:
+            fallback_n = int(fallback_collection.size().getInfo())
+            print(
+                f'[{ts()}] {count_cache_prefix.upper()} climo sample count '
+                f'month/day/hour={window_n}, fallback month/hour={fallback_n}.'
+            )
+        except Exception as e:
+            print(f'[{ts()}] {count_cache_prefix.upper()} climo sample-count check skipped: {e}')
+        CLIMO_SIZE_LOGGED.add(size_log_key)
+    return window_collection if window_n > 0 else fallback_collection
+
+
+def _sample_grouped_climo_array(
+    source_collection,
+    band_name,
+    bounds,
+    base_scale_m,
+    group_years=3,
+    context='',
+):
+    import numpy as np
+
+    if group_years < 1:
+        group_years = 1
+    start_year = int(CLIMO_START_YEAR)
+    end_year = int(CLIMO_END_YEAR)
+    if end_year < start_year:
+        raise RuntimeError(f'Invalid climatology year range: {start_year}-{end_year}')
+
+    weighted_sum = None
+    weight_sum = None
+    current_scale = int(max(20000, float(base_scale_m)))
+    groups_used = 0
+    years_used = 0
+    for y0 in range(start_year, end_year + 1, group_years):
+        y1 = min(end_year, y0 + group_years - 1)
+        grp = source_collection.filter(ee.Filter.calendarRange(y0, y1, 'year'))
+        grp_n = int(grp.size().getInfo())
+        if grp_n <= 0:
+            continue
+        groups_used += 1
+        years_used += grp_n
+        grp_img = ee.Image(grp.mean()).select(band_name).toFloat()
+        grp_arr, used_scale = _sample_rect_array(
+            grp_img,
+            band_name,
+            bounds,
+            current_scale,
+            context=f'{context} climo_{y0}_{y1}',
+        )
+        current_scale = max(current_scale, int(used_scale))
+        if weighted_sum is None:
+            weighted_sum = np.zeros_like(grp_arr, dtype=np.float64)
+            weight_sum = np.zeros_like(grp_arr, dtype=np.float64)
+        if weighted_sum.shape != grp_arr.shape:
+            weighted_sum, grp_arr = _align_arrays(weighted_sum, grp_arr)
+            weight_sum, _ = _align_arrays(weight_sum, grp_arr)
+        valid = np.isfinite(grp_arr)
+        if np.any(valid):
+            weighted_sum[valid] += grp_arr[valid] * float(grp_n)
+            weight_sum[valid] += float(grp_n)
+
+    if weighted_sum is None or groups_used == 0 or years_used == 0:
+        raise RuntimeError(f'{context} grouped climo sampling returned no data.')
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        out = (weighted_sum / weight_sum).astype(np.float32)
+    out[~np.isfinite(out)] = np.nan
+    return out, current_scale
+
+
+def _align_arrays(a, b):
+    import numpy as np
+
+    a_np = np.asarray(a, dtype=np.float32)
+    b_np = np.asarray(b, dtype=np.float32)
+    h = min(a_np.shape[0], b_np.shape[0])
+    w = min(a_np.shape[1], b_np.shape[1])
+    return a_np[:h, :w], b_np[:h, :w]
+
+
+def _fill_nan_gaps(field, fill_value=0.0):
+    import numpy as np
+
+    arr = np.asarray(field, dtype=np.float32).copy()
+    if arr.ndim != 2 or not np.isnan(arr).any():
+        return arr
+
+    x_idx = np.arange(arr.shape[1], dtype=np.float32)
+    for r in range(arr.shape[0]):
+        row = arr[r, :]
+        valid = np.isfinite(row)
+        if valid.all():
+            continue
+        if valid.any():
+            row[~valid] = np.interp(x_idx[~valid], x_idx[valid], row[valid]).astype(np.float32)
+        else:
+            row[:] = float(fill_value)
+        arr[r, :] = row
+
+    y_idx = np.arange(arr.shape[0], dtype=np.float32)
+    for c in range(arr.shape[1]):
+        col = arr[:, c]
+        valid = np.isfinite(col)
+        if valid.all():
+            continue
+        if valid.any():
+            col[~valid] = np.interp(y_idx[~valid], y_idx[valid], col[valid]).astype(np.float32)
+        else:
+            col[:] = float(fill_value)
+        arr[:, c] = col
+
+    arr[~np.isfinite(arr)] = float(fill_value)
+    return arr
+
+
+def _contour_levels(field, interval):
+    import numpy as np
+
+    if not interval or interval <= 0:
+        return None
+    finite = field[np.isfinite(field)]
+    if finite.size == 0:
+        return None
+    vmin = float(np.nanmin(finite))
+    vmax = float(np.nanmax(finite))
+    if not math.isfinite(vmin) or not math.isfinite(vmax) or vmax <= vmin:
+        return None
+    start = math.floor(vmin / float(interval)) * float(interval)
+    end = math.ceil(vmax / float(interval)) * float(interval)
+    levels = np.arange(start, end + float(interval) * 0.5, float(interval), dtype=np.float32)
+    if levels.size > 120:
+        step = max(1, int(math.ceil(levels.size / 120.0)))
+        levels = levels[::step]
+    return levels
+
+
+def _render_local_anomaly_tile(
+    anomaly_field,
+    contour_field,
+    bounds,
+    out_file,
+    width,
+    height,
+    palette,
+    vmin,
+    vmax,
+    minor_interval=None,
+    major_interval=12,
+    minor_color='#2a2a2a',
+    major_color='#1a1a1a',
+    major_lw=1.0,
+    highlight_level=None,
+    highlight_color='#2455ff',
+):
+    import numpy as np
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+
+    anomaly_arr = np.asarray(anomaly_field, dtype=np.float32)
+    contour_arr = np.asarray(contour_field, dtype=np.float32)
+    if anomaly_arr.shape != contour_arr.shape:
+        anomaly_arr, contour_arr = _align_arrays(anomaly_arr, contour_arr)
+    anomaly_arr = _fill_nan_gaps(anomaly_arr, fill_value=0.0)
+    contour_arr = _fill_nan_gaps(contour_arr, fill_value=float(np.nanmean(contour_arr)) if np.isfinite(contour_arr).any() else 540.0)
+
+    anomaly_arr = np.clip(anomaly_arr * float(ANOMALY_DISPLAY_GAIN), float(vmin), float(vmax))
+    lon_w, lat_s, lon_e, lat_n = [float(v) for v in bounds]
+    x = np.linspace(lon_w, lon_e, anomaly_arr.shape[1], dtype=np.float32)
+    y = np.linspace(lat_n, lat_s, anomaly_arr.shape[0], dtype=np.float32)
+
+    dpi = 100
+    fig = plt.figure(figsize=(max(2, width) / dpi, max(2, height) / dpi), dpi=dpi, frameon=False)
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    ax.set_axis_off()
+    ax.set_xlim(lon_w, lon_e)
+    ax.set_ylim(lat_s, lat_n)
+    ax.set_facecolor(BASEMAP_OCEAN_COLOR)
+
+    cmap = LinearSegmentedColormap.from_list('wn2_anom', list(palette), N=256)
+    ax.imshow(
+        anomaly_arr,
+        extent=[lon_w, lon_e, lat_s, lat_n],
+        origin='upper',
+        cmap=cmap,
+        vmin=float(vmin),
+        vmax=float(vmax),
+        interpolation='bilinear',
+        aspect='auto',
+    )
+
+    minor_levels = _contour_levels(contour_arr, minor_interval)
+    if minor_levels is not None and major_interval and float(minor_interval) < float(major_interval):
+        ax.contour(x, y, contour_arr, levels=minor_levels, colors=minor_color, linewidths=0.55, alpha=0.60)
+
+    major_levels = _contour_levels(contour_arr, major_interval)
+    if major_levels is not None:
+        ax.contour(x, y, contour_arr, levels=major_levels, colors=major_color, linewidths=major_lw, alpha=0.92)
+
+    if highlight_level is not None:
+        try:
+            ax.contour(
+                x,
+                y,
+                contour_arr,
+                levels=[float(highlight_level)],
+                colors=highlight_color,
+                linewidths=max(0.9, major_lw + 0.1),
+                alpha=0.95,
+            )
+        except Exception:
+            pass
+
+    fig.savefig(
+        out_file,
+        format='jpg',
+        dpi=dpi,
+        bbox_inches='tight',
+        pad_inches=0,
+        pil_kwargs={'quality': 97, 'subsampling': 0},
+    )
+    plt.close(fig)
+
+
+def _overlay_png_on_jpg(base_jpg, overlay_png):
+    from PIL import Image
+
+    with Image.open(base_jpg).convert('RGBA') as base, Image.open(overlay_png).convert('RGBA') as overlay:
+        if overlay.size != base.size:
+            overlay = overlay.resize(base.size, Image.BILINEAR)
+        merged = Image.alpha_composite(base, overlay)
+        merged.convert('RGB').save(base_jpg, format='JPEG', quality=97, subsampling=0)
+
+
+def _export_border_overlay_png(bounds, out_png, width, height, include_states=False, detailed=False):
+    region_geom = ee.Geometry.Rectangle(bounds, geodesic=False)
+    border_img = border_overlay(
+        include_states=include_states,
+        region_geom=region_geom,
+        detailed=detailed,
+    )
+    download_thumb(
+        border_img,
+        out_png,
+        {
+            'region': bounds,
+            'format': 'png',
+            'dimensions': f'{int(width)}x{int(height)}',
+            'crs': TARGET_CRS,
+        },
+    )
 
 
 def load_font(size, bold=False):
@@ -1560,13 +1934,41 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
         canvas.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 
-def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=88.5):
+def remap_nh_to_polar(
+    out_file,
+    lon0=NH_LON0,
+    lat_min=20.0,
+    lat_max=88.5,
+    lon_w=NH_SOURCE_REGION[0],
+    lon_e=NH_SOURCE_REGION[2],
+):
     from PIL import Image, ImageDraw
 
     with Image.open(out_file) as src:
         src_img = src.convert('RGB')
     sw, sh = src_img.size
     src_px = src_img.load()
+    edge_blend = max(8, min(48, sw // 40))
+    if sw > (edge_blend * 2 + 2):
+        for yy in range(sh):
+            for i in range(edge_blend):
+                li = i
+                ri = sw - edge_blend + i
+                left = src_px[li, yy]
+                right = src_px[ri, yy]
+                w = (i + 1) / float(edge_blend + 1)
+                lmix = (
+                    int(round(left[0] * (1.0 - w) + right[0] * w)),
+                    int(round(left[1] * (1.0 - w) + right[1] * w)),
+                    int(round(left[2] * (1.0 - w) + right[2] * w)),
+                )
+                rmix = (
+                    int(round(right[0] * (1.0 - w) + left[0] * w)),
+                    int(round(right[1] * (1.0 - w) + left[1] * w)),
+                    int(round(right[2] * (1.0 - w) + left[2] * w)),
+                )
+                src_px[li, yy] = lmix
+                src_px[ri, yy] = rmix
 
     out_size = NH_POLAR_DIMS
     out_img = Image.new('RGB', (out_size, out_size), color=(214, 214, 214))
@@ -1578,6 +1980,9 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=88.5):
     tan_edge = math.tan((math.pi / 4.0) - (math.radians(lat_min) / 2.0))
     if tan_edge <= 0:
         tan_edge = 1e-6
+    lon_span = float(lon_e) - float(lon_w)
+    if lon_span <= 0:
+        lon_span = 360.0
 
     for y in range(out_size):
         dy = (y - cy) / radius
@@ -1596,9 +2001,13 @@ def remap_nh_to_polar(out_file, lon0=NH_LON0, lat_min=20.0, lat_max=88.5):
                 lon = lon0 - math.degrees(math.atan2(dx, -dy))
             lon = ((lon + 180.0) % 360.0) - 180.0
 
-            # Wrap longitudes across the antimeridian to avoid a seam in polar remap.
-            sx_f = ((lon + 180.0) / 360.0) * sw
-            sx_f = sx_f % sw
+            # Map source longitude using the actual rectangular source bounds.
+            lon_rel = lon - float(lon_w)
+            while lon_rel < 0.0:
+                lon_rel += 360.0
+            while lon_rel >= lon_span:
+                lon_rel -= lon_span
+            sx_f = (lon_rel / lon_span) * (sw - 1)
             sy_f = (lat_max - lat) / (lat_max - lat_min) * (sh - 1)
             if sy_f < 0.0:
                 sy_f = 0.0
@@ -1769,7 +2178,135 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
     print(f'[{ts()}] Export complete for {out_file} ({time.time() - t0:.2f}s)')
 
 
+def _generate_z500_anomaly_map_local(img, h, region, prefix):
+    if prefix == 'nh_z500a':
+        map_dims = NH_SOURCE_DIMS
+        sample_bounds = NH_SOURCE_REGION
+        plans = [
+            {'dims': map_dims, 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[0], 'minor_interval': 6, 'major_interval': 12, 'include_z540': True, 'include_border': True, 'label': 'local base'},
+            {'dims': shrink_dimensions(map_dims), 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[1], 'minor_interval': 0, 'major_interval': 18, 'include_z540': True, 'include_border': True, 'label': 'local coarse'},
+            {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[2], 'minor_interval': 0, 'major_interval': 24, 'include_z540': False, 'include_border': True, 'label': 'local extra coarse'},
+            {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': int(LOCAL_Z500_NH_SCALES_M[2] * 1.7), 'minor_interval': 0, 'major_interval': 30, 'include_z540': False, 'include_border': False, 'label': 'local emergency'},
+        ]
+    else:
+        map_dims = region_dimensions(ANOMALY_DIMS, region)
+        sample_bounds = region
+        plans = [
+            {'dims': map_dims, 'sample_scale_m': LOCAL_Z500_NA_SCALES_M[0], 'minor_interval': 6, 'major_interval': 12, 'include_z540': True, 'include_border': True, 'label': 'local base'},
+            {'dims': shrink_dimensions(map_dims), 'sample_scale_m': LOCAL_Z500_NA_SCALES_M[1], 'minor_interval': 0, 'major_interval': 18, 'include_z540': True, 'include_border': True, 'label': 'local coarse'},
+            {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': LOCAL_Z500_NA_SCALES_M[2], 'minor_interval': 0, 'major_interval': 24, 'include_z540': False, 'include_border': True, 'label': 'local extra coarse'},
+            {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': int(LOCAL_Z500_NA_SCALES_M[2] * 1.7), 'minor_interval': 0, 'major_interval': 30, 'include_z540': False, 'include_border': False, 'label': 'local emergency'},
+        ]
+
+    out_file = build_frame_path(prefix, h)
+    valid_utc = RUN_INIT_UTC + timedelta(hours=int(h))
+    sample_geom = ee.Geometry.Rectangle(sample_bounds, geodesic=False)
+    last_msg = ''
+
+    for plan in plans:
+        border_png = f'{out_file}.border.png'
+        try:
+            width, height = parse_dimensions(plan['dims'])
+            forecast_m_img = (
+                img.select(WN2_Z500_BAND)
+                .divide(9.80665)
+                .clip(sample_geom)
+                .rename('h500_m')
+            )
+            forecast_m_arr, used_scale = _sample_rect_array(
+                forecast_m_img,
+                'h500_m',
+                sample_bounds,
+                plan['sample_scale_m'],
+                context=f'{prefix} forecast_h500_m',
+            )
+            climo_cache_key = (
+                'h500',
+                valid_utc.strftime('%Y%m%d%H'),
+                tuple(round(float(v), 3) for v in sample_bounds),
+                int(max(20000, float(used_scale))),
+            )
+            cached_climo = LOCAL_CLIMO_ARRAY_CACHE.get(climo_cache_key)
+            if cached_climo is None:
+                climo_source = _select_climo_source_collection(
+                    CLIMO_H500_COLLECTION,
+                    valid_utc,
+                    sample_geom,
+                    'h500',
+                )
+                climo_m_arr, _ = _sample_grouped_climo_array(
+                    climo_source,
+                    CLIMO_H500_BAND,
+                    sample_bounds,
+                    used_scale,
+                    group_years=3,
+                    context=f'{prefix} climo_h500_m',
+                )
+                LOCAL_CLIMO_ARRAY_CACHE[climo_cache_key] = climo_m_arr
+            else:
+                climo_m_arr = cached_climo
+            forecast_m_arr, climo_m_arr = _align_arrays(forecast_m_arr, climo_m_arr)
+            anomaly_m_arr = forecast_m_arr - climo_m_arr
+            contour_dam_arr = forecast_m_arr / 10.0
+
+            _render_local_anomaly_tile(
+                anomaly_field=anomaly_m_arr,
+                contour_field=contour_dam_arr,
+                bounds=sample_bounds,
+                out_file=out_file,
+                width=width,
+                height=height,
+                palette=ANOMALY_PALETTE,
+                vmin=ANOMALY_MIN_M,
+                vmax=ANOMALY_MAX_M,
+                minor_interval=plan['minor_interval'],
+                major_interval=plan['major_interval'],
+                minor_color='#2a2a2a',
+                major_color='#141414',
+                major_lw=1.0,
+                highlight_level=(540 if plan['include_z540'] else None),
+                highlight_color='#2455ff',
+            )
+
+            if plan.get('include_border', True):
+                _export_border_overlay_png(
+                    sample_bounds,
+                    border_png,
+                    width,
+                    height,
+                    include_states=False,
+                    detailed=False,
+                )
+                _overlay_png_on_jpg(out_file, border_png)
+
+            if prefix == 'nh_z500a':
+                remap_nh_to_polar(out_file, lon0=NH_LON0)
+            annotate_map_file(out_file, prefix, h)
+            return
+        except Exception as e:
+            last_msg = str(e)
+            if not _is_memory_or_invalid_argument_error(last_msg):
+                # Local path can fail on varying sample dimensions; continue to next plan first.
+                if 'sampleRectangle failed' not in last_msg and 'Invalid sampled array shape' not in last_msg:
+                    raise
+            print(f'[{ts()}] {prefix} hour {h}: local true anomaly retry failed ({plan["label"]}).')
+        finally:
+            if os.path.exists(border_png):
+                try:
+                    os.remove(border_png)
+                except OSError:
+                    pass
+
+    short_msg = (last_msg or 'Unknown export error').replace('\n', ' ')[:220]
+    raise RuntimeError(
+        f'{prefix} hour {h}: local true-anomaly export failed after retries. Last error: {short_msg}'
+    )
+
+
 def generate_z500_anomaly_map(img, h, region, prefix):
+    if LOCAL_TRUE_ANOMALY_RENDER:
+        return _generate_z500_anomaly_map_local(img, h, region, prefix)
+
     tile_parts = 4
     if prefix == 'nh_z500a':
         map_dims = NH_SOURCE_DIMS
@@ -2320,7 +2857,122 @@ def generate_conus_t2m_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m'):
     annotate_map_file(out_file, key, h)
 
 
+def _generate_conus_t2m_anomaly_map_local(img, h, region=CONUS_THUMB_REGION, key='conus_t2m_anom'):
+    base_dims = region_dimensions(CONUS_DIMS, region)
+    plans = [
+        {'dims': base_dims, 'sample_scale_m': LOCAL_T2M_ANOM_SCALES_M[0], 'contour_interval': 12, 'include_freezing': True, 'include_border': True, 'label': 'local base'},
+        {'dims': shrink_dimensions(base_dims), 'sample_scale_m': LOCAL_T2M_ANOM_SCALES_M[1], 'contour_interval': 18, 'include_freezing': True, 'include_border': True, 'label': 'local coarse'},
+        {'dims': shrink_dimensions(shrink_dimensions(base_dims)), 'sample_scale_m': LOCAL_T2M_ANOM_SCALES_M[2], 'contour_interval': 24, 'include_freezing': False, 'include_border': True, 'label': 'local extra coarse'},
+        {'dims': shrink_dimensions(shrink_dimensions(base_dims)), 'sample_scale_m': int(LOCAL_T2M_ANOM_SCALES_M[2] * 1.8), 'contour_interval': 30, 'include_freezing': False, 'include_border': False, 'label': 'local emergency'},
+    ]
+
+    out_file = build_frame_path(key, h)
+    valid_utc = RUN_INIT_UTC + timedelta(hours=int(h))
+    sample_geom = ee.Geometry.Rectangle(region, geodesic=False)
+    last_msg = ''
+
+    for plan in plans:
+        border_png = f'{out_file}.border.png'
+        try:
+            width, height = parse_dimensions(plan['dims'])
+            forecast_c_img = (
+                img.select(WN2_T2M_BAND)
+                .subtract(273.15)
+                .clip(sample_geom)
+                .rename('t2m_c')
+            )
+            forecast_c_arr, used_scale = _sample_rect_array(
+                forecast_c_img,
+                't2m_c',
+                region,
+                plan['sample_scale_m'],
+                context=f'{key} forecast_t2m_c',
+            )
+            climo_cache_key = (
+                't2m',
+                valid_utc.strftime('%Y%m%d%H'),
+                tuple(round(float(v), 3) for v in region),
+                int(max(20000, float(used_scale))),
+            )
+            cached_climo = LOCAL_CLIMO_ARRAY_CACHE.get(climo_cache_key)
+            if cached_climo is None:
+                climo_source = _select_climo_source_collection(
+                    CLIMO_T2M_COLLECTION,
+                    valid_utc,
+                    sample_geom,
+                    't2m',
+                )
+                climo_k_arr, _ = _sample_grouped_climo_array(
+                    climo_source,
+                    'T2M',
+                    region,
+                    used_scale,
+                    group_years=3,
+                    context=f'{key} climo_t2m_c',
+                )
+                climo_c_arr = climo_k_arr - 273.15
+                LOCAL_CLIMO_ARRAY_CACHE[climo_cache_key] = climo_c_arr
+            else:
+                climo_c_arr = cached_climo
+            forecast_c_arr, climo_c_arr = _align_arrays(forecast_c_arr, climo_c_arr)
+            anomaly_f_arr = (forecast_c_arr - climo_c_arr) * (9.0 / 5.0)
+            contour_f_arr = forecast_c_arr * (9.0 / 5.0) + 32.0
+
+            _render_local_anomaly_tile(
+                anomaly_field=anomaly_f_arr,
+                contour_field=contour_f_arr,
+                bounds=region,
+                out_file=out_file,
+                width=width,
+                height=height,
+                palette=T2M_ANOM_F_PALETTE,
+                vmin=T2M_ANOM_F_MIN,
+                vmax=T2M_ANOM_F_MAX,
+                minor_interval=None,
+                major_interval=int(plan['contour_interval']),
+                minor_color='#2d2d2d',
+                major_color='#222222',
+                major_lw=1.0,
+                highlight_level=(32 if plan.get('include_freezing', True) else None),
+                highlight_color='#2455ff',
+            )
+
+            if plan.get('include_border', True):
+                _export_border_overlay_png(
+                    region,
+                    border_png,
+                    width,
+                    height,
+                    include_states=True,
+                    detailed=False,
+                )
+                _overlay_png_on_jpg(out_file, border_png)
+
+            annotate_map_file(out_file, key, h)
+            return
+        except Exception as e:
+            last_msg = str(e)
+            if not _is_memory_or_invalid_argument_error(last_msg):
+                if 'sampleRectangle failed' not in last_msg and 'Invalid sampled array shape' not in last_msg:
+                    raise
+            print(f'[{ts()}] {key} hour {h}: local true anomaly retry failed ({plan["label"]}).')
+        finally:
+            if os.path.exists(border_png):
+                try:
+                    os.remove(border_png)
+                except OSError:
+                    pass
+
+    short_msg = (last_msg or 'Unknown export error').replace('\n', ' ')[:220]
+    raise RuntimeError(
+        f'{key} hour {h}: local true-anomaly export failed after retries. Last error: {short_msg}'
+    )
+
+
 def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m_anom'):
+    if LOCAL_TRUE_ANOMALY_RENDER:
+        return _generate_conus_t2m_anomaly_map_local(img, h, region=region, key=key)
+
     tile_bounds = split_region_longitude(region, parts=4)
     base_dims = region_dimensions(CONUS_DIMS, region)
     mid_dims = shrink_dimensions(base_dims)

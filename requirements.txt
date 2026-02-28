@@ -3,3 +3,5 @@ Pillow
 google-cloud-storage
 google-auth
 requests
+numpy
+matplotlib
