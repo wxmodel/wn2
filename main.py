@@ -1724,6 +1724,8 @@ def generate_z500_anomaly_map(img, h, region, prefix):
         contour_scale_m,
         minor_interval=Z500_MINOR_CONTOUR_INTERVAL,
         major_interval=Z500_MAJOR_CONTOUR_INTERVAL,
+        include_z540=True,
+        include_border=True,
     ):
         anomaly_for_render = _coarsen_for_compute(anomaly_field, anomaly_scale_m, min_scale_m=25000)
         contour_for_render = _coarsen_for_compute(contour_field, contour_scale_m, min_scale_m=25000)
@@ -1743,17 +1745,19 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                     line_width_frac=0.006,
                 )
             )
-        overlays.extend(
-            [
-                contour_overlay(
-                    contour_for_render,
-                    interval=major_interval,
-                    color='#121212',
-                    opacity=0.92,
-                    smooth_px=0,
-                    thicken_px=0,
-                    line_width_frac=0.009,
-                ),
+        overlays.append(
+            contour_overlay(
+                contour_for_render,
+                interval=major_interval,
+                color='#121212',
+                opacity=0.92,
+                smooth_px=0,
+                thicken_px=0,
+                line_width_frac=0.009,
+            )
+        )
+        if include_z540:
+            overlays.append(
                 highlight_iso_overlay(
                     contour_for_render,
                     level=540,
@@ -1761,14 +1765,16 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                     opacity=0.92,
                     tolerance=1.0,
                     smooth_px=0,
-                ),
+                )
+            )
+        if include_border:
+            overlays.append(
                 border_overlay(
                     include_states=False,
                     region_geom=tile_geom,
                     detailed=False,
-                ),
-            ]
-        )
+                )
+            )
         return ee.ImageCollection(overlays).mosaic()
 
     def _is_recoverable_export_error(msg):
@@ -1814,6 +1820,18 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 'major_interval': 24,
                 'label': 'split ultra coarse scale + ultra sparse contours',
             },
+            {
+                'use_scale': True,
+                'dims': low_dims,
+                'scale_m': int(ANOMALY_NH_SCALE_M * 4.2),
+                'anomaly_scale_m': int(Z500_NH_ANOM_SCALES_M[2] * 1.5),
+                'contour_scale_m': int(contour_scale_base * 2.8),
+                'minor_interval': 0,
+                'major_interval': 30,
+                'include_z540': False,
+                'include_border': False,
+                'label': 'emergency ultra coarse true anomaly',
+            },
         ]
     else:
         mid_dims = shrink_dimensions(map_dims)
@@ -1850,6 +1868,18 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 'major_interval': 24,
                 'label': 'ultra coarse scale + ultra sparse contours',
             },
+            {
+                'use_scale': True,
+                'dims': low_dims,
+                'scale_m': int(ANOMALY_NA_SCALE_M * 4.5),
+                'anomaly_scale_m': int(Z500_NA_ANOM_SCALES_M[2] * 1.5),
+                'contour_scale_m': int(contour_scale_base * 2.8),
+                'minor_interval': 0,
+                'major_interval': 30,
+                'include_z540': False,
+                'include_border': False,
+                'label': 'emergency ultra coarse true anomaly',
+            },
         ]
 
     out_file = build_frame_path(prefix, h)
@@ -1878,6 +1908,8 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                     contour_scale_m=plan['contour_scale_m'],
                     minor_interval=plan['minor_interval'],
                     major_interval=plan['major_interval'],
+                    include_z540=plan.get('include_z540', True),
+                    include_border=plan.get('include_border', True),
                 )
                 tile_out = west_tmp if idx == 0 else east_tmp
                 export_composite(
@@ -2236,9 +2268,18 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
         {'dims': mid_dims, 'scale_m': 30000, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[0], 'contour_interval': 12, 'label': 'scaled export + 12F contours'},
         {'dims': low_dims, 'scale_m': 42000, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[1], 'contour_interval': 18, 'label': 'coarse scale + sparse contours'},
         {'dims': low_dims, 'scale_m': 56000, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[2], 'contour_interval': 24, 'label': 'ultra coarse scale + ultra sparse contours'},
+        {'dims': low_dims, 'scale_m': 90000, 'work_scale_m': int(T2M_ANOM_WORK_SCALES_M[2] * 1.6), 'contour_interval': 30, 'include_border': False, 'include_freezing': False, 'label': 'emergency ultra coarse true anomaly'},
     ]
 
-    def _build_composite(tile_geom, t2m_anom_f, t2m_f, work_scale_m, contour_interval):
+    def _build_composite(
+        tile_geom,
+        t2m_anom_f,
+        t2m_f,
+        work_scale_m,
+        contour_interval,
+        include_border=True,
+        include_freezing=True,
+    ):
         anom_field = _coarsen_for_compute(t2m_anom_f, work_scale_m, min_scale_m=15000)
         contour_field = _coarsen_for_compute(t2m_f, max(work_scale_m, 28000), min_scale_m=20000)
         t2m_anom_vis = anom_field.resample('bilinear').focalMean(1, 'circle', 'pixels')
@@ -2255,21 +2296,25 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
             smooth_px=0,
             thicken_px=0,
         )
-        freezing_line = highlight_iso_overlay(
-            contour_field,
-            level=32,
-            color='#2455ff',
-            opacity=0.90,
-            tolerance=1.0,
-            smooth_px=0,
-        )
-        return ee.ImageCollection([
+        overlays = [
             flat_background_overlay(tile_geom, color=BASEMAP_OCEAN_COLOR),
             t2m_anom_layer,
             temp_contours,
-            freezing_line,
-            border_overlay(include_states=True, region_geom=tile_geom),
-        ]).mosaic()
+        ]
+        if include_freezing:
+            overlays.append(
+                highlight_iso_overlay(
+                    contour_field,
+                    level=32,
+                    color='#2455ff',
+                    opacity=0.90,
+                    tolerance=1.0,
+                    smooth_px=0,
+                )
+            )
+        if include_border:
+            overlays.append(border_overlay(include_states=True, region_geom=tile_geom))
+        return ee.ImageCollection(overlays).mosaic()
 
     def _is_recoverable_export_error(msg):
         return (
@@ -2309,6 +2354,8 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
                     t2m_f=t2m_f,
                     work_scale_m=plan['work_scale_m'],
                     contour_interval=plan['contour_interval'],
+                    include_border=plan.get('include_border', True),
+                    include_freezing=plan.get('include_freezing', True),
                 )
                 tile_out = west_tmp if idx == 0 else east_tmp
                 export_composite(
