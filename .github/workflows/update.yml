@@ -122,8 +122,92 @@ permissions:
   contents: write
 
 jobs:
-  build-and-deploy:
+  render-shards:
     runs-on: ubuntu-latest
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - phase: z500
+            shard_index: 0
+            shard_total: 2
+          - phase: z500
+            shard_index: 1
+            shard_total: 2
+          - phase: core
+            shard_index: 0
+            shard_total: 2
+          - phase: core
+            shard_index: 1
+            shard_total: 2
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: "requirements.txt"
+
+      - name: Install Libraries
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Map Generator (Shard)
+        id: map_generator
+        continue-on-error: true
+        env:
+          EE_KEY: ${{ secrets.EE_KEY }}
+          EE_PROJECT: ${{ secrets.EE_PROJECT }}
+          HOURS_MAX: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hour_range_preset != 'full' && github.event.inputs.hour_range_preset || '' }}
+          HOURS_LIMIT: ${{ github.event_name == 'push' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '') }}
+          HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
+          RUN_INIT_UTC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_init_utc || '' }}
+          SNOW_RATIO_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode == 'custom' && (github.event.inputs.snow_ratio_csv || '10,12,15,20') || '10' }}
+          RUN_HISTORY_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_history_hours || '24' }}
+          EXPORT_WORKERS: ${{ matrix.phase == 'core' && (github.event_name == 'workflow_dispatch' && github.event.inputs.export_workers || '2') || '1' }}
+          WN2_PRODUCT_MODE: custom
+          WN2_HOUR_SHARD_INDEX: ${{ matrix.shard_index }}
+          WN2_HOUR_SHARD_TOTAL: ${{ matrix.shard_total }}
+          WN2_RESUME_EXISTING: "1"
+          WN2_SKIP_CLEANUP_RUN_DIR: "1"
+          WN2_ALLOW_NO_PRODUCTS: "1"
+          WN2_RUN_NH_Z500A: ${{ matrix.phase == 'z500' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_nh_z500a == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_NA_Z500A: ${{ matrix.phase == 'z500' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_na_z500a == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_CONUS_MSLP_PTYPE: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_mslp_ptype == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_NE_MSLP_PTYPE: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_mslp_ptype == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_CONUS_VORT500: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_vort500 == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_CONUS_T2M: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_t2m == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_CONUS_T2M_ANOM: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_t2m_anom == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_CONUS_SNOW_ACCUM: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_snow_accum == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_NE_SNOW_ACCUM: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_snow_accum == 'true' && '1' || ''))) || '' }}
+          WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_zoom_snow_accum == 'true' && '1' || ''))) || '' }}
+        run: python main.py
+
+      - name: Report generator failure (shard)
+        if: ${{ steps.map_generator.outcome == 'failure' }}
+        run: |
+          echo "Shard generation failed; artifact upload will continue with partial outputs."
+
+      - name: Upload Shard Artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.phase }}-${{ matrix.shard_index }}
+          path: |
+            public/runs/**
+          if-no-files-found: warn
+          retention-days: 2
+
+  merge-and-deploy:
+    needs: render-shards
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -159,21 +243,39 @@ jobs:
             echo "No gh-pages branch yet; starting with a fresh public/ directory."
           fi
 
-      - name: Run Map Generator
-        id: map_generator
+      - name: Download Shard Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shard-*
+          path: .shards
+          merge-multiple: true
+
+      - name: Merge Shard Frames
+        run: |
+          mkdir -p public/runs
+          if [ -d .shards/public/runs ]; then
+            cp -R .shards/public/runs/. public/runs/
+          fi
+          if [ -d .shards/runs ]; then
+            cp -R .shards/runs/. public/runs/
+          fi
+
+      - name: Run Map Generator (Resume + Reconcile)
+        id: map_generator_reconcile
         continue-on-error: true
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
           EE_PROJECT: ${{ secrets.EE_PROJECT }}
-          HOURS_MAX: ${{ github.event_name == 'schedule' && '240' || (github.event_name == 'workflow_dispatch' && github.event.inputs.hour_range_preset != 'full' && github.event.inputs.hour_range_preset || '') }}
+          HOURS_MAX: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hour_range_preset != 'full' && github.event.inputs.hour_range_preset || '' }}
           HOURS_LIMIT: ${{ github.event_name == 'push' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '') }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
           RUN_INIT_UTC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_init_utc || '' }}
           SNOW_RATIO_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode == 'custom' && (github.event.inputs.snow_ratio_csv || '10,12,15,20') || '10' }}
           RUN_HISTORY_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_history_hours || '24' }}
-          FAST_RENDER: ${{ github.event_name == 'schedule' && '1' || '' }}
-          EXPORT_WORKERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.export_workers || (github.event_name == 'schedule' && '2' || '2') }}
+          EXPORT_WORKERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.export_workers || '2' }}
           WN2_PRODUCT_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode || 'all' }}
+          WN2_RESUME_EXISTING: "1"
+          WN2_SKIP_CLEANUP_RUN_DIR: "1"
           WN2_RUN_NH_Z500A: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_nh_z500a == 'true' && '1' || '')) }}
           WN2_RUN_NA_Z500A: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_na_z500a == 'true' && '1' || '')) }}
           WN2_RUN_CONUS_MSLP_PTYPE: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_mslp_ptype == 'true' && '1' || '')) }}
@@ -186,10 +288,10 @@ jobs:
           WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_zoom_snow_accum == 'true' && '1' || '')) }}
         run: python main.py
 
-      - name: Report generator failure
-        if: ${{ steps.map_generator.outcome == 'failure' }}
+      - name: Report generator failure (reconcile)
+        if: ${{ steps.map_generator_reconcile.outcome == 'failure' }}
         run: |
-          echo "Map generator step failed; deploying retained/partial outputs from public/."
+          echo "Reconcile run failed; deploying retained/partial outputs from public/."
 
       - name: Deploy to GitHub Pages
         if: ${{ always() }}

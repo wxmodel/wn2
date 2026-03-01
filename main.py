@@ -206,6 +206,14 @@ run_history_hours_env = os.environ.get('RUN_HISTORY_HOURS')
 event_name = (os.environ.get('GITHUB_EVENT_NAME') or '').lower()
 fast_render_env = os.environ.get('FAST_RENDER')
 product_mode_env = os.environ.get('WN2_PRODUCT_MODE')
+hour_shard_index_env = os.environ.get('WN2_HOUR_SHARD_INDEX')
+hour_shard_total_env = os.environ.get('WN2_HOUR_SHARD_TOTAL')
+resume_existing_env = os.environ.get('WN2_RESUME_EXISTING')
+skip_cleanup_run_dir_env = os.environ.get('WN2_SKIP_CLEANUP_RUN_DIR')
+allow_no_products_env = os.environ.get('WN2_ALLOW_NO_PRODUCTS')
+adaptive_long_range_env = os.environ.get('WN2_ADAPTIVE_LONG_RANGE')
+long_range_threshold_env = os.environ.get('WN2_LONG_RANGE_THRESHOLD')
+min_valid_frame_bytes_env = os.environ.get('WN2_MIN_VALID_FRAME_BYTES')
 run_nh_z500a_env = os.environ.get('WN2_RUN_NH_Z500A')
 run_na_z500a_env = os.environ.get('WN2_RUN_NA_Z500A')
 run_conus_mslp_ptype_env = os.environ.get('WN2_RUN_CONUS_MSLP_PTYPE')
@@ -232,6 +240,10 @@ def _select_product_flag(raw, default=True):
 
 
 LOCAL_TRUE_ANOMALY_RENDER = _env_flag(local_true_anom_render_env, default=True)
+RESUME_EXISTING = _env_flag(resume_existing_env, default=True)
+SKIP_CLEANUP_RUN_DIR = _env_flag(skip_cleanup_run_dir_env, default=RESUME_EXISTING)
+ALLOW_NO_PRODUCTS = _env_flag(allow_no_products_env, default=False)
+ADAPTIVE_LONG_RANGE = _env_flag(adaptive_long_range_env, default=True)
 
 FAST_RENDER = _env_flag(fast_render_env, default=(event_name == 'schedule'))
 if FAST_RENDER:
@@ -391,6 +403,9 @@ for key, label, pattern, raw_flag in PRODUCT_OPTIONS:
         ENABLED_PRODUCTS.append((key, label, pattern))
 
 if not ENABLED_PRODUCTS:
+    if ALLOW_NO_PRODUCTS:
+        print(f'[{ts()}] No products enabled for this shard; exiting early (WN2_ALLOW_NO_PRODUCTS=1).')
+        raise SystemExit(0)
     raise ValueError(
         'No products selected. Enable at least one WN2_RUN_* product flag or select a checkbox in workflow_dispatch.'
     )
@@ -620,6 +635,16 @@ def _parse_int(value):
         return None
 
 
+def _parse_hour_shard(index_raw, total_raw):
+    idx = _parse_int(index_raw)
+    total = _parse_int(total_raw)
+    if idx is None or total is None:
+        return 0, 1
+    total = max(1, total)
+    idx = max(0, min(total - 1, idx))
+    return idx, total
+
+
 def _parse_snow_ratios(csv_value):
     if csv_value:
         parts = [p.strip() for p in str(csv_value).split(',') if p.strip()]
@@ -628,6 +653,18 @@ def _parse_snow_ratios(csv_value):
             return parsed
     return [10]
 
+
+HOUR_SHARD_INDEX, HOUR_SHARD_TOTAL = _parse_hour_shard(hour_shard_index_env, hour_shard_total_env)
+long_range_threshold_raw = _parse_int(long_range_threshold_env)
+if long_range_threshold_raw is None:
+    LONG_RANGE_THRESHOLD = 120
+else:
+    LONG_RANGE_THRESHOLD = max(24, long_range_threshold_raw)
+min_valid_frame_bytes_raw = _parse_int(min_valid_frame_bytes_env)
+if min_valid_frame_bytes_raw is None:
+    MIN_VALID_FRAME_BYTES = 12000
+else:
+    MIN_VALID_FRAME_BYTES = max(4000, min_valid_frame_bytes_raw)
 
 SNOW_RATIOS = _parse_snow_ratios(snow_ratio_csv_env)
 run_history_hours_raw = _parse_int(run_history_hours_env)
@@ -638,6 +675,14 @@ else:
 
 print(f'[{ts()}] Snow ratios selected: {SNOW_RATIOS}')
 print(f'[{ts()}] Run history retention: {RUN_HISTORY_HOURS}h')
+print(
+    f'[{ts()}] Resume existing frames: {RESUME_EXISTING} '
+    f'(min_valid_bytes={MIN_VALID_FRAME_BYTES}, skip_cleanup={SKIP_CLEANUP_RUN_DIR})'
+)
+if ADAPTIVE_LONG_RANGE:
+    print(f'[{ts()}] Adaptive long-range render enabled from hour {LONG_RANGE_THRESHOLD}+.')
+if HOUR_SHARD_TOTAL > 1:
+    print(f'[{ts()}] Hour sharding requested: shard {HOUR_SHARD_INDEX + 1}/{HOUR_SHARD_TOTAL}.')
 if run_init_utc_env:
     print(f'[{ts()}] Requested run init override: {run_init_utc_env}')
 elif event_name == 'workflow_dispatch':
@@ -719,8 +764,32 @@ def _select_hours(available_hours):
     return selected
 
 
+def _apply_hour_shard(hours, shard_index=0, shard_total=1):
+    if shard_total <= 1 or not hours:
+        return list(hours)
+    chunk_size = int(math.ceil(len(hours) / float(shard_total)))
+    start = shard_index * chunk_size
+    end = min(len(hours), start + chunk_size)
+    if start >= len(hours):
+        return []
+    return list(hours[start:end])
+
+
 AVAILABLE_HOURS = _infer_available_hours(latest_start_collection)
 HOURS = _select_hours(AVAILABLE_HOURS)
+if HOUR_SHARD_TOTAL > 1:
+    base_hours = list(HOURS)
+    HOURS = _apply_hour_shard(HOURS, shard_index=HOUR_SHARD_INDEX, shard_total=HOUR_SHARD_TOTAL)
+    if HOURS:
+        print(
+            f'[{ts()}] Hour shard selection: {len(HOURS)} hour(s) '
+            f'({HOURS[0]}..{HOURS[-1]}) from {len(base_hours)} total selected hours.'
+        )
+    else:
+        print(
+            f'[{ts()}] Hour shard selection produced no hours for '
+            f'shard {HOUR_SHARD_INDEX + 1}/{HOUR_SHARD_TOTAL}; continuing with no-op render.'
+        )
 
 hour0_candidates = filter_forecast_hour(latest_start_collection, 0)
 hour0_image = ee.Image(ee.Algorithms.If(hour0_candidates.size().gt(0), hour0_candidates.first(), latest_start_collection.first()))
@@ -750,6 +819,9 @@ RUN_ID_LABEL = RUN_INIT_UTC.strftime('%Y-%m-%d %HZ')
 RUNS_ROOT_DIR = Path(OUTPUT) / 'runs'
 RUN_OUTPUT_DIR = RUNS_ROOT_DIR / RUN_ID
 RUN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+BORDER_CACHE_DIR = RUN_OUTPUT_DIR / '.cache' / 'borders'
+BORDER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+BORDER_OVERLAY_CACHE = {}
 print(f'[{ts()}] Run output directory: {RUN_OUTPUT_DIR}')
 
 
@@ -1165,6 +1237,43 @@ def parse_dimensions(dimensions, fallback_w=1200, fallback_h=900):
     return fallback_w, fallback_h
 
 
+def scale_dimensions(dimensions, factor=1.0, min_w=500, min_h=400):
+    factor = float(max(0.2, min(2.0, factor)))
+    if isinstance(dimensions, int):
+        return max(min_w, int(round(dimensions * factor)))
+    if isinstance(dimensions, str) and 'x' in dimensions:
+        w_str, h_str = dimensions.lower().split('x', 1)
+        try:
+            w = max(min_w, int(round(int(w_str) * factor)))
+            h = max(min_h, int(round(int(h_str) * factor)))
+            return f'{w}x{h}'
+        except ValueError:
+            return dimensions
+    return dimensions
+
+
+def is_long_range_hour(hour):
+    try:
+        h = int(hour)
+    except (TypeError, ValueError):
+        return False
+    return ADAPTIVE_LONG_RANGE and h >= LONG_RANGE_THRESHOLD
+
+
+def adaptive_dimensions_for_hour(dimensions, hour, long_factor=0.90, min_w=500, min_h=400):
+    if not is_long_range_hour(hour):
+        return dimensions
+    return scale_dimensions(dimensions, factor=long_factor, min_w=min_w, min_h=min_h)
+
+
+def adaptive_interval_for_hour(base_interval, hour, long_interval=None, multiplier=1.3):
+    if not is_long_range_hour(hour):
+        return int(base_interval)
+    if long_interval is not None:
+        return int(long_interval)
+    return max(int(base_interval) + 1, int(round(float(base_interval) * float(multiplier))))
+
+
 def _is_memory_or_invalid_argument_error(msg):
     text = str(msg)
     return (
@@ -1511,6 +1620,34 @@ def _export_border_overlay_png(bounds, out_png, width, height, include_states=Fa
             'crs': TARGET_CRS,
         },
     )
+
+
+def get_cached_border_overlay_png(bounds, width, height, include_states=False, detailed=False):
+    key_payload = {
+        'bounds': [round(float(v), 4) for v in bounds],
+        'width': int(width),
+        'height': int(height),
+        'include_states': bool(include_states),
+        'detailed': bool(detailed),
+    }
+    key_text = json.dumps(key_payload, sort_keys=True, separators=(',', ':'))
+    key = hashlib.md5(key_text.encode('utf-8')).hexdigest()
+    cached = BORDER_OVERLAY_CACHE.get(key)
+    if cached and os.path.exists(cached):
+        return cached
+
+    out_png = str(BORDER_CACHE_DIR / f'border_{key}.png')
+    if not os.path.exists(out_png):
+        _export_border_overlay_png(
+            bounds,
+            out_png,
+            width,
+            height,
+            include_states=include_states,
+            detailed=detailed,
+        )
+    BORDER_OVERLAY_CACHE[key] = out_png
+    return out_png
 
 
 def load_font(size, bold=False):
@@ -2127,8 +2264,10 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
     current_region = region
     current_dimensions = dimensions
     current_scale = scale
+    max_attempts = 4
+    backoff_schedule_s = [2, 4, 7]
 
-    for attempt in range(1, 6):
+    for attempt in range(1, max_attempts + 1):
         params = {
             'region': current_region,
             'format': 'jpg',
@@ -2153,24 +2292,27 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
             is_memory = status == 400 and 'User memory limit exceeded' in body
             is_transform = status == 400 and 'Unable to transform edge' in body
 
-            if attempt < 5 and is_memory:
+            if attempt < max_attempts and is_memory:
                 if current_scale is not None:
-                    current_scale = int(max(2000, current_scale * 1.30))
+                    current_scale = int(max(2000, current_scale * 1.45))
                 else:
                     current_dimensions = shrink_dimensions(current_dimensions)
-                wait_s = min(24, 4 * attempt)
+                wait_s = backoff_schedule_s[min(attempt - 1, len(backoff_schedule_s) - 1)]
                 print(
-                    f'[{ts()}] Retry {attempt}/4 for {out_file} after memory limit '
+                    f'[{ts()}] Retry {attempt}/{max_attempts - 1} for {out_file} after memory limit '
                     f'(wait {wait_s}s, next scale={current_scale}, next dims={current_dimensions}).'
                 )
                 time.sleep(wait_s)
                 continue
 
-            if attempt < 5 and is_transform:
+            if attempt < max_attempts and is_transform:
                 new_region = inset_region_bbox(current_region)
                 if new_region != current_region:
                     current_region = new_region
-                    print(f'[{ts()}] Retry {attempt}/4 for {out_file} with inset region to bypass transform edge.')
+                    print(
+                        f'[{ts()}] Retry {attempt}/{max_attempts - 1} for {out_file} '
+                        f'with inset region to bypass transform edge.'
+                    )
                     continue
 
             raise
@@ -2198,13 +2340,21 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
             {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': int(LOCAL_Z500_NA_SCALES_M[2] * 1.7), 'minor_interval': 0, 'major_interval': 30, 'include_z540': False, 'include_border': False, 'label': 'local emergency'},
         ]
 
+    if is_long_range_hour(h):
+        for plan in plans:
+            plan['dims'] = adaptive_dimensions_for_hour(plan['dims'], h, long_factor=0.92, min_w=760, min_h=300)
+            plan['sample_scale_m'] = int(plan['sample_scale_m'] * 1.2)
+            if plan.get('minor_interval', 0) > 0:
+                plan['minor_interval'] = max(12, int(plan['minor_interval']))
+            plan['major_interval'] = max(18, int(plan['major_interval']))
+
     out_file = build_frame_path(prefix, h)
     valid_utc = RUN_INIT_UTC + timedelta(hours=int(h))
     sample_geom = ee.Geometry.Rectangle(sample_bounds, geodesic=False)
     last_msg = ''
 
     for plan in plans:
-        border_png = f'{out_file}.border.png'
+        border_png = None
         try:
             width, height = parse_dimensions(plan['dims'])
             forecast_m_img = (
@@ -2269,9 +2419,8 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
             )
 
             if plan.get('include_border', True):
-                _export_border_overlay_png(
+                border_png = get_cached_border_overlay_png(
                     sample_bounds,
-                    border_png,
                     width,
                     height,
                     include_states=False,
@@ -2290,12 +2439,6 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
                 if 'sampleRectangle failed' not in last_msg and 'Invalid sampled array shape' not in last_msg:
                     raise
             print(f'[{ts()}] {prefix} hour {h}: local true anomaly retry failed ({plan["label"]}).')
-        finally:
-            if os.path.exists(border_png):
-                try:
-                    os.remove(border_png)
-                except OSError:
-                    pass
 
     short_msg = (last_msg or 'Unknown export error').replace('\n', ' ')[:220]
     raise RuntimeError(
@@ -2482,6 +2625,19 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 'label': 'emergency ultra coarse true anomaly',
             },
         ]
+
+    if is_long_range_hour(h):
+        for plan in plans:
+            plan['dims'] = adaptive_dimensions_for_hour(plan['dims'], h, long_factor=0.92, min_w=700, min_h=320)
+            if plan.get('scale_m') is not None:
+                plan['scale_m'] = int(plan['scale_m'] * 1.15)
+            if plan.get('anomaly_scale_m') is not None:
+                plan['anomaly_scale_m'] = int(plan['anomaly_scale_m'] * 1.2)
+            if plan.get('contour_scale_m') is not None:
+                plan['contour_scale_m'] = int(plan['contour_scale_m'] * 1.2)
+            plan['major_interval'] = max(18, int(plan['major_interval']))
+            if plan.get('minor_interval', 0) > 0:
+                plan['minor_interval'] = max(12, int(plan['minor_interval']))
 
     out_file = build_frame_path(prefix, h)
     last_msg = ''
@@ -2742,6 +2898,22 @@ def build_frame_path(product_key, hour, snow_ratio=None):
     return str(RUN_OUTPUT_DIR / build_frame_name(product_key, hour, snow_ratio=snow_ratio))
 
 
+def frame_exists_valid(path):
+    p = Path(path)
+    if not p.exists():
+        return False
+    try:
+        return p.stat().st_size >= MIN_VALID_FRAME_BYTES
+    except OSError:
+        return False
+
+
+def should_render_frame(path):
+    if not RESUME_EXISTING:
+        return True
+    return not frame_exists_valid(path)
+
+
 def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_ptype'):
     region_geom = ee.Geometry.Rectangle(region, geodesic=False)
     is_ne = key.startswith('ne_')
@@ -2767,9 +2939,10 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
     )
 
     mslp_hpa = img.select(WN2_MSLP_BAND).divide(100).clip(work_geom)
+    mslp_interval = adaptive_interval_for_hour(3, h, long_interval=4)
     mslp_contours = contour_overlay(
         mslp_hpa,
-        interval=3,
+        interval=mslp_interval,
         color='#2a2a2a',
         opacity=0.9,
     )
@@ -2787,7 +2960,7 @@ def generate_mslp_ptype_map(img, h, region=CONUS_THUMB_REGION, key='conus_mslp_p
 
     out_file = build_frame_path(key, h)
     base_dims = PTYPE_NE_DIMS if key.startswith('ne_') else PTYPE_CONUS_DIMS
-    dims = region_dimensions(base_dims, region)
+    dims = adaptive_dimensions_for_hour(region_dimensions(base_dims, region), h, long_factor=0.92, min_w=980, min_h=720)
     export_composite(composite, out_file, region, dimensions=dims)
     annotate_map_file(out_file, key, h, map_region=region, low_center=low_center)
 
@@ -2812,7 +2985,7 @@ def generate_snow_accum_map(img, h, running_snow_cm, region=CONUS_THUMB_REGION, 
 
     out_file = build_frame_path(key, h, snow_ratio=snow_ratio)
     base_dims = SNOW_NE_DIMS if key.startswith('ne_') else SNOW_CONUS_DIMS
-    dims = region_dimensions(base_dims, region)
+    dims = adaptive_dimensions_for_hour(region_dimensions(base_dims, region), h, long_factor=0.92, min_w=980, min_h=720)
     export_composite(composite, out_file, region, dimensions=dims)
     annotate_map_file(out_file, key, h, map_region=region, snow_labels=snow_labels, snow_ratio=snow_ratio)
 
@@ -2828,9 +3001,10 @@ def generate_conus_t2m_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m'):
     )
     t2m_vis = t2m_f.resample('bilinear').focalMean(1, 'circle', 'pixels')
     t2m_layer = t2m_vis.visualize(min=T2M_F_MIN, max=T2M_F_MAX, palette=T2M_F_PALETTE)
+    temp_interval = adaptive_interval_for_hour(8, h, long_interval=10)
     t2m_contours = contour_overlay(
         t2m_vis,
-        interval=8,
+        interval=temp_interval,
         color='#2a2a2a',
         opacity=0.62,
         smooth_px=0,
@@ -2852,7 +3026,7 @@ def generate_conus_t2m_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m'):
         border_overlay(include_states=True),
     ]).mosaic()
     out_file = build_frame_path(key, h)
-    dims = region_dimensions(CONUS_DIMS, region)
+    dims = adaptive_dimensions_for_hour(region_dimensions(CONUS_DIMS, region), h, long_factor=0.92, min_w=980, min_h=720)
     export_composite(composite, out_file, region, dimensions=dims)
     annotate_map_file(out_file, key, h)
 
@@ -2865,6 +3039,11 @@ def _generate_conus_t2m_anomaly_map_local(img, h, region=CONUS_THUMB_REGION, key
         {'dims': shrink_dimensions(shrink_dimensions(base_dims)), 'sample_scale_m': LOCAL_T2M_ANOM_SCALES_M[2], 'contour_interval': 24, 'include_freezing': False, 'include_border': True, 'label': 'local extra coarse'},
         {'dims': shrink_dimensions(shrink_dimensions(base_dims)), 'sample_scale_m': int(LOCAL_T2M_ANOM_SCALES_M[2] * 1.8), 'contour_interval': 30, 'include_freezing': False, 'include_border': False, 'label': 'local emergency'},
     ]
+    if is_long_range_hour(h):
+        for plan in plans:
+            plan['dims'] = adaptive_dimensions_for_hour(plan['dims'], h, long_factor=0.92, min_w=760, min_h=520)
+            plan['sample_scale_m'] = int(plan['sample_scale_m'] * 1.2)
+            plan['contour_interval'] = max(18, int(plan['contour_interval']))
 
     out_file = build_frame_path(key, h)
     valid_utc = RUN_INIT_UTC + timedelta(hours=int(h))
@@ -2872,7 +3051,7 @@ def _generate_conus_t2m_anomaly_map_local(img, h, region=CONUS_THUMB_REGION, key
     last_msg = ''
 
     for plan in plans:
-        border_png = f'{out_file}.border.png'
+        border_png = None
         try:
             width, height = parse_dimensions(plan['dims'])
             forecast_c_img = (
@@ -2938,9 +3117,8 @@ def _generate_conus_t2m_anomaly_map_local(img, h, region=CONUS_THUMB_REGION, key
             )
 
             if plan.get('include_border', True):
-                _export_border_overlay_png(
+                border_png = get_cached_border_overlay_png(
                     region,
-                    border_png,
                     width,
                     height,
                     include_states=True,
@@ -2956,12 +3134,6 @@ def _generate_conus_t2m_anomaly_map_local(img, h, region=CONUS_THUMB_REGION, key
                 if 'sampleRectangle failed' not in last_msg and 'Invalid sampled array shape' not in last_msg:
                     raise
             print(f'[{ts()}] {key} hour {h}: local true anomaly retry failed ({plan["label"]}).')
-        finally:
-            if os.path.exists(border_png):
-                try:
-                    os.remove(border_png)
-                except OSError:
-                    pass
 
     short_msg = (last_msg or 'Unknown export error').replace('\n', ' ')[:220]
     raise RuntimeError(
@@ -2983,6 +3155,12 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
         {'dims': low_dims, 'scale_m': 56000, 'work_scale_m': T2M_ANOM_WORK_SCALES_M[2], 'contour_interval': 24, 'label': 'ultra coarse scale + ultra sparse contours'},
         {'dims': low_dims, 'scale_m': 90000, 'work_scale_m': int(T2M_ANOM_WORK_SCALES_M[2] * 1.6), 'contour_interval': 30, 'include_border': False, 'include_freezing': False, 'label': 'emergency ultra coarse true anomaly'},
     ]
+    if is_long_range_hour(h):
+        for plan in plans:
+            plan['dims'] = adaptive_dimensions_for_hour(plan['dims'], h, long_factor=0.92, min_w=760, min_h=520)
+            plan['scale_m'] = int(plan['scale_m'] * 1.15)
+            plan['work_scale_m'] = int(plan['work_scale_m'] * 1.2)
+            plan['contour_interval'] = max(18, int(plan['contour_interval']))
 
     def _build_composite(
         tile_geom,
@@ -3120,9 +3298,10 @@ def generate_vort500_map(img, h):
         palette=VORTICITY_PALETTE,
     )
     z500_height_dam = img.select(WN2_Z500_BAND).divide(9.80665).divide(10).clip(region_geom)
+    z500_interval = adaptive_interval_for_hour(6, h, long_interval=8)
     z500_contours = contour_overlay(
         z500_height_dam,
-        interval=6,
+        interval=z500_interval,
         color='#2d2d2d',
         opacity=0.88,
     )
@@ -3134,7 +3313,13 @@ def generate_vort500_map(img, h):
     ]).mosaic()
 
     out_file = build_frame_path('conus_vort500', h)
-    dims = region_dimensions(CONUS_DIMS, CONUS_THUMB_REGION)
+    dims = adaptive_dimensions_for_hour(
+        region_dimensions(CONUS_DIMS, CONUS_THUMB_REGION),
+        h,
+        long_factor=0.92,
+        min_w=980,
+        min_h=720,
+    )
     export_composite(composite, out_file, CONUS_THUMB_REGION, dimensions=dims)
     annotate_map_file(out_file, 'conus_vort500', h)
 
@@ -3173,45 +3358,20 @@ def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg", require_variat
 
 # --- 4. EXECUTION ---
 cleanup_old_products()
-cleanup_current_run_products()
+if SKIP_CLEANUP_RUN_DIR:
+    print(f'[{ts()}] Skipping run-directory cleanup to preserve existing frames for resume mode.')
+else:
+    cleanup_current_run_products()
 failures = []
 successful_exports = 0
+planned_exports = 0
+skipped_existing_exports = 0
 failed_product_keys = set()
 failed_product_messages = {}
 needs_snow_accum = any(k in SNOW_PRODUCT_KEYS for k, _, _ in ENABLED_PRODUCTS)
 snow_accum_by_hour = {}
-
-if needs_snow_accum:
-    zero_snow = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
-    selected_hours = sorted(set(HOURS))
-    max_selected_hour = selected_hours[-1]
-    accum_hours = sorted([hh for hh in AVAILABLE_HOURS if 0 <= hh <= max_selected_hour])
-    if not accum_hours:
-        accum_hours = selected_hours
-
-    running_snow_cm = zero_snow
-    running_by_available_hour = {0: zero_snow}
-    for hh in accum_hours:
-        if hh <= 0:
-            running_by_available_hour[hh] = running_snow_cm
-            continue
-        step_img = get_hour_image(hh)
-        running_snow_cm = running_snow_cm.add(snow_increment_cm(step_img, CONUS_REGION)).rename('snow_total_cm')
-        running_by_available_hour[hh] = running_snow_cm
-
-    for sh in selected_hours:
-        eligible = [hh for hh in running_by_available_hour.keys() if hh <= sh]
-        if eligible:
-            snow_accum_by_hour[sh] = running_by_available_hour[max(eligible)]
-        else:
-            snow_accum_by_hour[sh] = zero_snow
-    print(
-        f'[{ts()}] Snow accumulation precompute: '
-        f'available_steps={len(accum_hours)}, selected_frames={len(selected_hours)}, '
-        f'max_hour={max_selected_hour}.'
-    )
-else:
-    zero_snow = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
+zero_snow = ee.Image.constant(0).clip(CONUS_REGION).rename('snow_total_cm')
+snow_precompute_done = False
 
 enabled_keys = {k for k, _, _ in ENABLED_PRODUCTS}
 hour_image_cache = {}
@@ -3250,12 +3410,55 @@ def _record_task_failure(hour, name, err_msg, exc):
         ) from exc
 
 
+def ensure_snow_accum_precompute():
+    global snow_precompute_done, snow_accum_by_hour
+
+    if snow_precompute_done or not needs_snow_accum:
+        return
+    selected_hours = sorted(set(HOURS))
+    if not selected_hours:
+        snow_precompute_done = True
+        return
+
+    max_selected_hour = selected_hours[-1]
+    accum_hours = sorted([hh for hh in AVAILABLE_HOURS if 0 <= hh <= max_selected_hour])
+    if not accum_hours:
+        accum_hours = selected_hours
+
+    running_snow_cm = zero_snow
+    running_by_available_hour = {0: zero_snow}
+    for hh in accum_hours:
+        if hh <= 0:
+            running_by_available_hour[hh] = running_snow_cm
+            continue
+        step_img = get_hour_image(hh)
+        running_snow_cm = running_snow_cm.add(snow_increment_cm(step_img, CONUS_REGION)).rename('snow_total_cm')
+        running_by_available_hour[hh] = running_snow_cm
+
+    local_map = {}
+    for sh in selected_hours:
+        eligible = [hh for hh in running_by_available_hour.keys() if hh <= sh]
+        if eligible:
+            local_map[sh] = running_by_available_hour[max(eligible)]
+        else:
+            local_map[sh] = zero_snow
+    snow_accum_by_hour = local_map
+    snow_precompute_done = True
+    print(
+        f'[{ts()}] Snow accumulation precompute: '
+        f'available_steps={len(accum_hours)}, selected_frames={len(selected_hours)}, '
+        f'max_hour={max_selected_hour}.'
+    )
+
+
 def write_step_summary(
     success_count,
     failure_items,
     enabled_products=None,
     generated_products=None,
     missing_products=None,
+    planned_count=0,
+    skipped_existing_count=0,
 ):
     summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
     if not summary_path:
@@ -3269,6 +3472,10 @@ def write_step_summary(
             f'- Successful exports: {int(success_count)}',
             f'- Failed exports: {len(failure_items)}',
         ]
+        if planned_count:
+            lines.append(f'- Planned exports this run: {int(planned_count)}')
+        if skipped_existing_count:
+            lines.append(f'- Skipped existing frames: {int(skipped_existing_count)}')
         if enabled_products:
             lines.append(f'- Enabled products: {", ".join(enabled_products)}')
         if generated_products:
@@ -3295,6 +3502,11 @@ def write_step_summary(
 if 'nh_z500a' in enabled_keys:
     print(f'[{ts()}] Phase 1/3: generating NH z500 true-anomaly maps first.')
     for h in HOURS:
+        out_file = build_frame_path('nh_z500a', h)
+        if not should_render_frame(out_file):
+            skipped_existing_exports += 1
+            continue
+        planned_exports += 1
         print(f'Generating Hour {h} [NH z500]...')
         img = get_cached_hour_image(h)
         try:
@@ -3307,58 +3519,122 @@ non_z500_enabled = [k for k in enabled_keys if k not in {'nh_z500a', 'na_z500a'}
 if non_z500_enabled:
     print(f'[{ts()}] Phase 2/3: generating non-z500 products.')
     for h in HOURS:
-        print(f'Generating Hour {h} [core products]...')
-        img = get_cached_hour_image(h)
-        snow_for_hour = snow_accum_by_hour.get(h, zero_snow)
-        tasks = []
+        task_specs = []
 
         if 'conus_mslp_ptype' in enabled_keys:
-            tasks.append(('conus_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, CONUS_THUMB_REGION, 'conus_mslp_ptype')))
+            out_file = build_frame_path('conus_mslp_ptype', h)
+            if should_render_frame(out_file):
+                task_specs.append(('conus_mslp_ptype', 'conus_mslp_ptype', None))
+            else:
+                skipped_existing_exports += 1
         if 'ne_mslp_ptype' in enabled_keys:
-            tasks.append(('ne_mslp_ptype', lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, NE_THUMB_REGION, 'ne_mslp_ptype')))
+            out_file = build_frame_path('ne_mslp_ptype', h)
+            if should_render_frame(out_file):
+                task_specs.append(('ne_mslp_ptype', 'ne_mslp_ptype', None))
+            else:
+                skipped_existing_exports += 1
         if 'conus_vort500' in enabled_keys:
-            tasks.append(('conus_vort500', lambda i=img, hh=h: generate_vort500_map(i, hh)))
+            out_file = build_frame_path('conus_vort500', h)
+            if should_render_frame(out_file):
+                task_specs.append(('conus_vort500', 'conus_vort500', None))
+            else:
+                skipped_existing_exports += 1
         if 'conus_t2m' in enabled_keys:
-            tasks.append(('conus_t2m', lambda i=img, hh=h: generate_conus_t2m_map(i, hh, CONUS_THUMB_REGION, 'conus_t2m')))
+            out_file = build_frame_path('conus_t2m', h)
+            if should_render_frame(out_file):
+                task_specs.append(('conus_t2m', 'conus_t2m', None))
+            else:
+                skipped_existing_exports += 1
         if 'conus_t2m_anom' in enabled_keys:
-            tasks.append(('conus_t2m_anom', lambda i=img, hh=h: generate_conus_t2m_anomaly_map(i, hh, CONUS_THUMB_REGION, 'conus_t2m_anom')))
+            out_file = build_frame_path('conus_t2m_anom', h)
+            if should_render_frame(out_file):
+                task_specs.append(('conus_t2m_anom', 'conus_t2m_anom', None))
+            else:
+                skipped_existing_exports += 1
         if 'conus_snow_accum' in enabled_keys:
             for ratio in SNOW_RATIOS:
+                out_file = build_frame_path('conus_snow_accum', h, snow_ratio=ratio)
+                if should_render_frame(out_file):
+                    task_specs.append((f'conus_snow_accum_r{ratio:02d}', 'conus_snow_accum', ratio))
+                else:
+                    skipped_existing_exports += 1
+        if 'ne_snow_accum' in enabled_keys:
+            for ratio in SNOW_RATIOS:
+                out_file = build_frame_path('ne_snow_accum', h, snow_ratio=ratio)
+                if should_render_frame(out_file):
+                    task_specs.append((f'ne_snow_accum_r{ratio:02d}', 'ne_snow_accum', ratio))
+                else:
+                    skipped_existing_exports += 1
+        if 'ne_zoom_snow_accum' in enabled_keys:
+            for ratio in SNOW_RATIOS:
+                out_file = build_frame_path('ne_zoom_snow_accum', h, snow_ratio=ratio)
+                if should_render_frame(out_file):
+                    task_specs.append((f'ne_zoom_snow_accum_r{ratio:02d}', 'ne_zoom_snow_accum', ratio))
+                else:
+                    skipped_existing_exports += 1
+
+        if not task_specs:
+            continue
+
+        planned_exports += len(task_specs)
+        print(f'Generating Hour {h} [core products] ({len(task_specs)} pending export(s))...')
+        img = get_cached_hour_image(h)
+        needs_snow_here = any(spec[1] in SNOW_PRODUCT_KEYS for spec in task_specs)
+        if needs_snow_here:
+            ensure_snow_accum_precompute()
+            snow_for_hour = snow_accum_by_hour.get(h, zero_snow)
+        else:
+            snow_for_hour = zero_snow
+
+        tasks = []
+        for name, kind, ratio in task_specs:
+            if kind == 'conus_mslp_ptype':
+                tasks.append((name, lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, CONUS_THUMB_REGION, 'conus_mslp_ptype')))
+            elif kind == 'ne_mslp_ptype':
+                tasks.append((name, lambda i=img, hh=h: generate_mslp_ptype_map(i, hh, NE_THUMB_REGION, 'ne_mslp_ptype')))
+            elif kind == 'conus_vort500':
+                tasks.append((name, lambda i=img, hh=h: generate_vort500_map(i, hh)))
+            elif kind == 'conus_t2m':
+                tasks.append((name, lambda i=img, hh=h: generate_conus_t2m_map(i, hh, CONUS_THUMB_REGION, 'conus_t2m')))
+            elif kind == 'conus_t2m_anom':
+                tasks.append((name, lambda i=img, hh=h: generate_conus_t2m_anomaly_map(i, hh, CONUS_THUMB_REGION, 'conus_t2m_anom')))
+            elif kind == 'conus_snow_accum':
+                rr = int(ratio)
                 tasks.append((
-                    f'conus_snow_accum_r{ratio:02d}',
-                    lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                    name,
+                    lambda i=img, hh=h, s=snow_for_hour, r=rr: generate_snow_accum_map(
                         i,
                         hh,
                         s,
                         CONUS_THUMB_REGION,
                         'conus_snow_accum',
-                        snow_ratio=rr,
+                        snow_ratio=r,
                     ),
                 ))
-        if 'ne_snow_accum' in enabled_keys:
-            for ratio in SNOW_RATIOS:
+            elif kind == 'ne_snow_accum':
+                rr = int(ratio)
                 tasks.append((
-                    f'ne_snow_accum_r{ratio:02d}',
-                    lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                    name,
+                    lambda i=img, hh=h, s=snow_for_hour, r=rr: generate_snow_accum_map(
                         i,
                         hh,
                         s,
                         NE_THUMB_REGION,
                         'ne_snow_accum',
-                        snow_ratio=rr,
+                        snow_ratio=r,
                     ),
                 ))
-        if 'ne_zoom_snow_accum' in enabled_keys:
-            for ratio in SNOW_RATIOS:
+            elif kind == 'ne_zoom_snow_accum':
+                rr = int(ratio)
                 tasks.append((
-                    f'ne_zoom_snow_accum_r{ratio:02d}',
-                    lambda i=img, hh=h, s=snow_for_hour, rr=ratio: generate_snow_accum_map(
+                    name,
+                    lambda i=img, hh=h, s=snow_for_hour, r=rr: generate_snow_accum_map(
                         i,
                         hh,
                         s,
                         NE_ZOOM_SNOW_THUMB_REGION,
                         'ne_zoom_snow_accum',
-                        snow_ratio=rr,
+                        snow_ratio=r,
                     ),
                 ))
 
@@ -3376,6 +3652,11 @@ if non_z500_enabled:
 if 'na_z500a' in enabled_keys:
     print(f'[{ts()}] Phase 3/3: generating NA z500 true-anomaly maps last.')
     for h in HOURS:
+        out_file = build_frame_path('na_z500a', h)
+        if not should_render_frame(out_file):
+            skipped_existing_exports += 1
+            continue
+        planned_exports += 1
         print(f'Generating Hour {h} [NA z500]...')
         img = get_cached_hour_image(h)
         try:
@@ -3384,29 +3665,37 @@ if 'na_z500a' in enabled_keys:
         except Exception as e:
             _record_task_failure(h, 'na_z500a', str(e), e)
 
+print(
+    f'[{ts()}] Export counts: planned={planned_exports}, '
+    f'generated={successful_exports}, skipped_existing={skipped_existing_exports}, failed={len(failures)}.'
+)
+
 if failures:
     print(f'[{ts()}] Completed with {len(failures)} failed hour(s).')
     for h, msg in failures:
         print(f'[{ts()}] Failure summary - hour {h}: {msg}')
 
 generated_product_keys = []
-if successful_exports > 0:
-    for key, _, pattern in ENABLED_PRODUCTS:
-        product_files = sorted(Path(RUN_OUTPUT_DIR).glob(pattern))
-        if not product_files:
-            if key in failed_product_keys:
-                print(f'[{ts()}] Skipping sanity check for {key}: no frames generated after render failures.')
-            else:
-                print(f'[{ts()}] Skipping sanity check for {key}: no frames generated this run.')
-            continue
-        sanity_check_jpgs(
-            str(RUN_OUTPUT_DIR),
-            pattern=pattern,
-            require_variation=not is_snow_product(key),
-        )
+skip_sanity_checks = RESUME_EXISTING and planned_exports == 0 and successful_exports == 0 and not failures
+for key, _, pattern in ENABLED_PRODUCTS:
+    product_files = sorted(Path(RUN_OUTPUT_DIR).glob(pattern))
+    if not product_files:
+        if key in failed_product_keys:
+            print(f'[{ts()}] Skipping sanity check for {key}: no frames generated after render failures.')
+        else:
+            print(f'[{ts()}] Skipping sanity check for {key}: no frames generated this run.')
+        continue
+    if skip_sanity_checks:
         generated_product_keys.append(key)
-else:
-    print(f'[{ts()}] Skipping sanity check: no product images were created.')
+        continue
+    sanity_check_jpgs(
+        str(RUN_OUTPUT_DIR),
+        pattern=pattern,
+        require_variation=not is_snow_product(key),
+    )
+    generated_product_keys.append(key)
+if skip_sanity_checks:
+    print(f'[{ts()}] Sanity checks skipped: resume-only run with no new exports planned.')
 
 enabled_product_keys = [key for key, _, _ in ENABLED_PRODUCTS]
 missing_product_keys = [key for key in enabled_product_keys if key not in generated_product_keys]
@@ -3422,6 +3711,8 @@ write_step_summary(
     enabled_products=enabled_product_keys,
     generated_products=generated_product_keys,
     missing_products=missing_product_keys,
+    planned_count=planned_exports,
+    skipped_existing_count=skipped_existing_exports,
 )
 
 
