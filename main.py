@@ -214,6 +214,8 @@ allow_no_products_env = os.environ.get('WN2_ALLOW_NO_PRODUCTS')
 adaptive_long_range_env = os.environ.get('WN2_ADAPTIVE_LONG_RANGE')
 long_range_threshold_env = os.environ.get('WN2_LONG_RANGE_THRESHOLD')
 min_valid_frame_bytes_env = os.environ.get('WN2_MIN_VALID_FRAME_BYTES')
+climo_window_days_env = os.environ.get('WN2_CLIMO_DOY_WINDOW_DAYS')
+short_range_accuracy_hours_env = os.environ.get('WN2_SHORT_RANGE_ACCURACY_HOURS')
 run_nh_z500a_env = os.environ.get('WN2_RUN_NH_Z500A')
 run_na_z500a_env = os.environ.get('WN2_RUN_NA_Z500A')
 run_conus_mslp_ptype_env = os.environ.get('WN2_RUN_CONUS_MSLP_PTYPE')
@@ -665,6 +667,16 @@ if min_valid_frame_bytes_raw is None:
     MIN_VALID_FRAME_BYTES = 12000
 else:
     MIN_VALID_FRAME_BYTES = max(4000, min_valid_frame_bytes_raw)
+climo_window_days_raw = _parse_int(climo_window_days_env)
+if climo_window_days_raw is None:
+    CLIMO_DOY_WINDOW_DAYS = 5
+else:
+    CLIMO_DOY_WINDOW_DAYS = max(0, min(15, climo_window_days_raw))
+short_range_accuracy_hours_raw = _parse_int(short_range_accuracy_hours_env)
+if short_range_accuracy_hours_raw is None:
+    SHORT_RANGE_ACCURACY_HOURS = 24
+else:
+    SHORT_RANGE_ACCURACY_HOURS = max(0, min(72, short_range_accuracy_hours_raw))
 
 SNOW_RATIOS = _parse_snow_ratios(snow_ratio_csv_env)
 run_history_hours_raw = _parse_int(run_history_hours_env)
@@ -679,6 +691,12 @@ print(
     f'[{ts()}] Resume existing frames: {RESUME_EXISTING} '
     f'(min_valid_bytes={MIN_VALID_FRAME_BYTES}, skip_cleanup={SKIP_CLEANUP_RUN_DIR})'
 )
+print(
+    f'[{ts()}] Climatology baseline: MERRA2 {CLIMO_START_YEAR}-{CLIMO_END_YEAR} '
+    f'(day-window=+/-{CLIMO_DOY_WINDOW_DAYS}d, not model-climate).'
+)
+if SHORT_RANGE_ACCURACY_HOURS > 0:
+    print(f'[{ts()}] Short-range anomaly fidelity boost enabled through hour {SHORT_RANGE_ACCURACY_HOURS}.')
 if ADAPTIVE_LONG_RANGE:
     print(f'[{ts()}] Adaptive long-range render enabled from hour {LONG_RANGE_THRESHOLD}+.')
 if HOUR_SHARD_TOTAL > 1:
@@ -2080,11 +2098,14 @@ def remap_nh_to_polar(
     lon_e=NH_SOURCE_REGION[2],
 ):
     from PIL import Image, ImageDraw
+    import numpy as np
 
     with Image.open(out_file) as src:
         src_img = src.convert('RGB')
     sw, sh = src_img.size
     src_px = src_img.load()
+    src_arr = np.asarray(src_img, dtype=np.float32)
+    row_mean = src_arr.mean(axis=1)
     edge_blend = max(8, min(48, sw // 40))
     if sw > (edge_blend * 2 + 2):
         for yy in range(sh):
@@ -2120,6 +2141,7 @@ def remap_nh_to_polar(
     lon_span = float(lon_e) - float(lon_w)
     if lon_span <= 0:
         lon_span = 360.0
+    pole_cap = 0.018  # blend polar cap using zonal mean to avoid single-longitude pinwheel artifacts.
 
     for y in range(out_size):
         dy = (y - cy) / radius
@@ -2158,6 +2180,16 @@ def remap_nh_to_polar(
             y1 = min(sh - 1, y0 + 1)
             wx = sx_f - x0_raw
             wy = sy_f - y0
+
+            if r < pole_cap:
+                c0 = row_mean[y0]
+                c1 = row_mean[y1]
+                out_px[x, y] = (
+                    int(round(c0[0] * (1.0 - wy) + c1[0] * wy)),
+                    int(round(c0[1] * (1.0 - wy) + c1[1] * wy)),
+                    int(round(c0[2] * (1.0 - wy) + c1[2] * wy)),
+                )
+                continue
 
             c00 = src_px[x0, y0]
             c10 = src_px[x1, y0]
@@ -2339,6 +2371,11 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
             {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': LOCAL_Z500_NA_SCALES_M[2], 'minor_interval': 0, 'major_interval': 24, 'include_z540': False, 'include_border': True, 'label': 'local extra coarse'},
             {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': int(LOCAL_Z500_NA_SCALES_M[2] * 1.7), 'minor_interval': 0, 'major_interval': 30, 'include_z540': False, 'include_border': False, 'label': 'local emergency'},
         ]
+
+    if SHORT_RANGE_ACCURACY_HOURS > 0 and int(h) <= SHORT_RANGE_ACCURACY_HOURS:
+        for i, plan in enumerate(plans):
+            factor = 0.82 if i == 0 else 0.88 if i == 1 else 1.0
+            plan['sample_scale_m'] = int(max(45000, plan['sample_scale_m'] * factor))
 
     if is_long_range_hour(h):
         for plan in plans:
