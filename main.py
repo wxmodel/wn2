@@ -626,7 +626,7 @@ def _parse_snow_ratios(csv_value):
         parsed = sorted({v for v in (_parse_int(p) for p in parts) if v is not None and 10 <= v <= 20})
         if parsed:
             return parsed
-    return [10, 12, 15, 20]
+    return [10]
 
 
 SNOW_RATIOS = _parse_snow_ratios(snow_ratio_csv_env)

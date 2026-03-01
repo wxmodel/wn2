@@ -36,7 +36,7 @@ on:
         default: ""
         type: string
       snow_ratio_csv:
-        description: "Snow ratios to render (10-20, comma-separated; e.g. 10,12,15,20)"
+        description: "Snow ratios to render for custom runs only (10-20, comma-separated; e.g. 10,12,15,20)"
         required: false
         default: "10,12,15,20"
         type: string
@@ -169,7 +169,7 @@ jobs:
           HOURS_LIMIT: ${{ github.event_name == 'push' && '1' || (github.event_name == 'workflow_dispatch' && github.event.inputs.preview_one_frame == 'true' && '1' || '') }}
           HOURS_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hours_csv || '' }}
           RUN_INIT_UTC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_init_utc || '' }}
-          SNOW_RATIO_CSV: ${{ github.event_name == 'schedule' && '10,12,15,20' || (github.event_name == 'workflow_dispatch' && github.event.inputs.snow_ratio_csv || '10,12,15,20') }}
+          SNOW_RATIO_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode == 'custom' && (github.event.inputs.snow_ratio_csv || '10,12,15,20') || '10' }}
           RUN_HISTORY_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_history_hours || '24' }}
           FAST_RENDER: ${{ github.event_name == 'schedule' && '1' || '' }}
           EXPORT_WORKERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.export_workers || (github.event_name == 'schedule' && '2' || '2') }}
