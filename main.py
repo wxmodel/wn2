@@ -296,17 +296,16 @@ EXPORT_WORKERS = max(1, min(4, EXPORT_WORKERS))
 print(f'[{ts()}] Render profile: fast={FAST_RENDER}, workers={EXPORT_WORKERS}, dims={ANOMALY_DIMS}/{CONUS_DIMS}.')
 
 ANOMALY_PALETTE = [
-    '#f057da', '#b23ccf', '#7244cf', '#4062db', '#2b85eb', '#2eaef1',
-    '#39d6ff', '#29d652', '#84e86a',
-    '#d9dde2',
-    '#f4ee9a', '#f7c96d', '#f59a50', '#ee6537', '#dd3125', '#9b1416'
+    '#6a1b9a', '#7e57c2', '#5c6bc0', '#3f7fcf', '#5ea5de', '#8cc3e8',
+    '#bddbf0', '#dfe7ee',
+    '#efe4b0', '#efcd83', '#eaa45f', '#e2784a', '#cc4f36', '#a92a26'
 ]
 ANOMALY_NEG_PALETTE = ['#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#9fd7f5']
 ANOMALY_POS_PALETTE = ['#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16']
 ANOMALY_MIN_M = -300
 ANOMALY_MAX_M = 300
 ANOMALY_NEUTRAL_M = 6
-ANOMALY_DISPLAY_GAIN = 1.25
+ANOMALY_DISPLAY_GAIN = 1.0
 ANOMALY_SMOOTH_RADIUS_PX = 0
 BASEMAP_LAND_COLOR = '#e6ebef'
 BASEMAP_OCEAN_COLOR = '#d6dde4'
@@ -2106,7 +2105,7 @@ def remap_nh_to_polar(
     src_px = src_img.load()
     src_arr = np.asarray(src_img, dtype=np.float32)
     row_mean = src_arr.mean(axis=1)
-    edge_blend = max(8, min(48, sw // 40))
+    edge_blend = max(2, min(10, sw // 160))
     if sw > (edge_blend * 2 + 2):
         for yy in range(sh):
             for i in range(edge_blend):
@@ -2141,7 +2140,8 @@ def remap_nh_to_polar(
     lon_span = float(lon_e) - float(lon_w)
     if lon_span <= 0:
         lon_span = 360.0
-    pole_cap = 0.018  # blend polar cap using zonal mean to avoid single-longitude pinwheel artifacts.
+    pole_cap_inner = 0.06
+    pole_cap_outer = 0.18
 
     for y in range(out_size):
         dy = (y - cy) / radius
@@ -2181,16 +2181,6 @@ def remap_nh_to_polar(
             wx = sx_f - x0_raw
             wy = sy_f - y0
 
-            if r < pole_cap:
-                c0 = row_mean[y0]
-                c1 = row_mean[y1]
-                out_px[x, y] = (
-                    int(round(c0[0] * (1.0 - wy) + c1[0] * wy)),
-                    int(round(c0[1] * (1.0 - wy) + c1[1] * wy)),
-                    int(round(c0[2] * (1.0 - wy) + c1[2] * wy)),
-                )
-                continue
-
             c00 = src_px[x0, y0]
             c10 = src_px[x1, y0]
             c01 = src_px[x0, y1]
@@ -2204,7 +2194,24 @@ def remap_nh_to_polar(
             rch = int(round(c00[0] * w00 + c10[0] * w10 + c01[0] * w01 + c11[0] * w11))
             gch = int(round(c00[1] * w00 + c10[1] * w10 + c01[1] * w01 + c11[1] * w11))
             bch = int(round(c00[2] * w00 + c10[2] * w10 + c01[2] * w01 + c11[2] * w11))
-            out_px[x, y] = (rch, gch, bch)
+            if r < pole_cap_outer:
+                c0 = row_mean[y0]
+                c1 = row_mean[y1]
+                avg_r = float(c0[0] * (1.0 - wy) + c1[0] * wy)
+                avg_g = float(c0[1] * (1.0 - wy) + c1[1] * wy)
+                avg_b = float(c0[2] * (1.0 - wy) + c1[2] * wy)
+                if r <= pole_cap_inner:
+                    mix_w = 1.0
+                else:
+                    mix_w = (pole_cap_outer - r) / max(1e-6, (pole_cap_outer - pole_cap_inner))
+                mix_w = max(0.0, min(1.0, mix_w))
+                out_px[x, y] = (
+                    int(round(avg_r * mix_w + rch * (1.0 - mix_w))),
+                    int(round(avg_g * mix_w + gch * (1.0 - mix_w))),
+                    int(round(avg_b * mix_w + bch * (1.0 - mix_w))),
+                )
+            else:
+                out_px[x, y] = (rch, gch, bch)
 
     draw = ImageDraw.Draw(out_img)
     draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(44, 44, 44), width=2)
@@ -2374,8 +2381,8 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
 
     if SHORT_RANGE_ACCURACY_HOURS > 0 and int(h) <= SHORT_RANGE_ACCURACY_HOURS:
         for i, plan in enumerate(plans):
-            factor = 0.82 if i == 0 else 0.88 if i == 1 else 1.0
-            plan['sample_scale_m'] = int(max(45000, plan['sample_scale_m'] * factor))
+            factor = 0.70 if i == 0 else 0.82 if i == 1 else 1.0
+            plan['sample_scale_m'] = int(max(36000, plan['sample_scale_m'] * factor))
 
     if is_long_range_hour(h):
         for plan in plans:
