@@ -1,7 +1,7 @@
 {
-  "generated_utc": "2026-02-28T23:50:50Z",
+  "generated_utc": "2026-03-01T00:19:22Z",
   "history_hours": 24,
-  "default_run_id": "2026022812",
+  "default_run_id": "2026022806",
   "snow_products": [
     "conus_snow_accum",
     "ne_snow_accum",
@@ -41,10 +41,7 @@
         "ne_zoom_snow_accum"
       ],
       "snow_ratios": [
-        10,
-        12,
-        15,
-        20
+        10
       ],
       "product_hours": {
         "nh_z500a": [
@@ -80,22 +77,13 @@
       },
       "product_snow_ratios": {
         "conus_snow_accum": [
-          10,
-          12,
-          15,
-          20
+          10
         ],
         "ne_snow_accum": [
-          10,
-          12,
-          15,
-          20
+          10
         ],
         "ne_zoom_snow_accum": [
-          10,
-          12,
-          15,
-          20
+          10
         ]
       },
       "enabled_products": [
@@ -113,9 +101,9 @@
       "missing_products": [],
       "failed_products": [],
       "failure_messages": {},
-      "successful_exports": 19,
+      "successful_exports": 10,
       "failed_exports": 0,
-      "updated_utc": "2026-02-28T23:50:50Z"
+      "updated_utc": "2026-03-01T00:19:22Z"
     },
     {
       "id": "2026022806",
