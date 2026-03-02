@@ -1,7 +1,7 @@
 {
-  "generated_utc": "2026-03-02T15:06:01Z",
-  "history_hours": 6,
-  "default_run_id": "2026030200",
+  "generated_utc": "2026-03-02T19:10:38Z",
+  "history_hours": 24,
+  "default_run_id": "2026030212",
   "snow_products": [
     "conus_snow_accum",
     "ne_snow_accum",
@@ -20,6 +20,91 @@
     "ne_zoom_snow_accum": "New England Zoom Snowfall Accumulation"
   },
   "runs": [
+    {
+      "id": "2026030212",
+      "label": "2026-03-02 12Z",
+      "run_date": "202603021200_202603021800_0",
+      "init_utc": "2026-03-02T12:00:00Z",
+      "hours": [
+        6
+      ],
+      "products": [
+        "nh_z500a",
+        "na_z500a",
+        "conus_mslp_ptype",
+        "ne_mslp_ptype",
+        "conus_vort500",
+        "conus_t2m",
+        "conus_t2m_anom",
+        "conus_snow_accum",
+        "ne_snow_accum",
+        "ne_zoom_snow_accum"
+      ],
+      "snow_ratios": [
+        10
+      ],
+      "product_hours": {
+        "nh_z500a": [
+          6
+        ],
+        "na_z500a": [
+          6
+        ],
+        "conus_mslp_ptype": [
+          6
+        ],
+        "ne_mslp_ptype": [
+          6
+        ],
+        "conus_vort500": [
+          6
+        ],
+        "conus_t2m": [
+          6
+        ],
+        "conus_t2m_anom": [
+          6
+        ],
+        "conus_snow_accum": [
+          6
+        ],
+        "ne_snow_accum": [
+          6
+        ],
+        "ne_zoom_snow_accum": [
+          6
+        ]
+      },
+      "product_snow_ratios": {
+        "conus_snow_accum": [
+          10
+        ],
+        "ne_snow_accum": [
+          10
+        ],
+        "ne_zoom_snow_accum": [
+          10
+        ]
+      },
+      "enabled_products": [
+        "nh_z500a",
+        "na_z500a",
+        "conus_mslp_ptype",
+        "ne_mslp_ptype",
+        "conus_vort500",
+        "conus_t2m",
+        "conus_t2m_anom",
+        "conus_snow_accum",
+        "ne_snow_accum",
+        "ne_zoom_snow_accum"
+      ],
+      "missing_products": [],
+      "failed_products": [],
+      "failure_messages": {},
+      "successful_exports": 10,
+      "failed_exports": 0,
+      "updated_utc": "2026-03-02T19:10:38Z"
+    },
     {
       "id": "2026030206",
       "label": "2026-03-02 06Z",
