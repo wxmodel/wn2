@@ -205,6 +205,8 @@ snow_ratio_csv_env = os.environ.get('SNOW_RATIO_CSV')
 run_history_hours_env = os.environ.get('RUN_HISTORY_HOURS')
 event_name = (os.environ.get('GITHUB_EVENT_NAME') or '').lower()
 fast_render_env = os.environ.get('FAST_RENDER')
+max_dimension_env = os.environ.get('WN2_MAX_DIMENSION')
+geography_detail_env = os.environ.get('WN2_GEOGRAPHY_DETAIL')
 product_mode_env = os.environ.get('WN2_PRODUCT_MODE')
 hour_shard_index_env = os.environ.get('WN2_HOUR_SHARD_INDEX')
 hour_shard_total_env = os.environ.get('WN2_HOUR_SHARD_TOTAL')
@@ -215,6 +217,8 @@ adaptive_long_range_env = os.environ.get('WN2_ADAPTIVE_LONG_RANGE')
 long_range_threshold_env = os.environ.get('WN2_LONG_RANGE_THRESHOLD')
 min_valid_frame_bytes_env = os.environ.get('WN2_MIN_VALID_FRAME_BYTES')
 climo_window_days_env = os.environ.get('WN2_CLIMO_DOY_WINDOW_DAYS')
+climo_start_year_env = os.environ.get('WN2_CLIMO_START_YEAR')
+climo_end_year_env = os.environ.get('WN2_CLIMO_END_YEAR')
 short_range_accuracy_hours_env = os.environ.get('WN2_SHORT_RANGE_ACCURACY_HOURS')
 run_nh_z500a_env = os.environ.get('WN2_RUN_NH_Z500A')
 run_na_z500a_env = os.environ.get('WN2_RUN_NA_Z500A')
@@ -226,6 +230,8 @@ run_ne_snow_accum_env = os.environ.get('WN2_RUN_NE_SNOW_ACCUM')
 run_ne_zoom_snow_accum_env = os.environ.get('WN2_RUN_NE_ZOOM_SNOW_ACCUM')
 run_conus_t2m_env = os.environ.get('WN2_RUN_CONUS_T2M')
 run_conus_t2m_anom_env = os.environ.get('WN2_RUN_CONUS_T2M_ANOM')
+selected_products_csv_env = os.environ.get('WN2_SELECTED_PRODUCTS')
+nh_render_mode_env = os.environ.get('WN2_NH_RENDER_MODE')
 local_true_anom_render_env = os.environ.get('WN2_LOCAL_TRUE_ANOM_RENDER')
 
 
@@ -241,13 +247,60 @@ def _select_product_flag(raw, default=True):
     return _env_flag(raw, default=default)
 
 
+def _parse_product_keys_csv(raw):
+    text = str(raw or '').strip().lower()
+    if not text:
+        return []
+    parts = re.split(r'[\s,]+', text)
+    return [p for p in parts if p]
+
+
 LOCAL_TRUE_ANOMALY_RENDER = _env_flag(local_true_anom_render_env, default=True)
 RESUME_EXISTING = _env_flag(resume_existing_env, default=True)
 SKIP_CLEANUP_RUN_DIR = _env_flag(skip_cleanup_run_dir_env, default=RESUME_EXISTING)
 ALLOW_NO_PRODUCTS = _env_flag(allow_no_products_env, default=False)
 ADAPTIVE_LONG_RANGE = _env_flag(adaptive_long_range_env, default=True)
+NH_RENDER_MODE = str(nh_render_mode_env or 'legacy').strip().lower()
+if NH_RENDER_MODE not in ('legacy', 'polar'):
+    print(f'[{ts()}] Invalid WN2_NH_RENDER_MODE="{NH_RENDER_MODE}", defaulting to legacy.')
+    NH_RENDER_MODE = 'legacy'
+USE_NH_TRUE_POLAR_RENDER = (NH_RENDER_MODE == 'polar')
 
 FAST_RENDER = _env_flag(fast_render_env, default=(event_name == 'schedule'))
+
+
+def _cap_dims_to_max(dimensions, max_px, min_px=360):
+    if max_px is None:
+        return dimensions
+    try:
+        max_px = int(max_px)
+    except (TypeError, ValueError):
+        return dimensions
+    if max_px <= 0:
+        return dimensions
+
+    if isinstance(dimensions, int):
+        return max(int(min_px), min(int(dimensions), int(max_px)))
+
+    if isinstance(dimensions, str) and 'x' in dimensions:
+        w_str, h_str = dimensions.lower().split('x', 1)
+        try:
+            w = int(w_str)
+            h = int(h_str)
+        except ValueError:
+            return dimensions
+        if w <= max_px and h <= max_px:
+            return dimensions
+        scale = min(max_px / float(w), max_px / float(h))
+        if scale >= 1.0:
+            return dimensions
+        nw = max(int(min_px), int(round(w * scale)))
+        nh = max(int(min_px), int(round(h * scale)))
+        return f'{nw}x{nh}'
+
+    return dimensions
+
+
 if FAST_RENDER:
     ANOMALY_DIMS = '1080x790'
     CONUS_DIMS = '1300x930'
@@ -287,6 +340,50 @@ else:
     LOCAL_Z500_NA_SCALES_M = [70000, 105000, 150000]
     LOCAL_T2M_ANOM_SCALES_M = [30000, 45000, 70000]
 
+max_dimension_px = None
+if max_dimension_env:
+    try:
+        max_dimension_px = int(max_dimension_env)
+    except ValueError:
+        print(f'[{ts()}] Invalid WN2_MAX_DIMENSION="{max_dimension_env}", ignoring.')
+        max_dimension_px = None
+if max_dimension_px is not None:
+    max_dimension_px = max(480, min(1400, max_dimension_px))
+    ANOMALY_DIMS = _cap_dims_to_max(ANOMALY_DIMS, max_dimension_px)
+    CONUS_DIMS = _cap_dims_to_max(CONUS_DIMS, max_dimension_px)
+    NE_DIMS = _cap_dims_to_max(NE_DIMS, max_dimension_px)
+    PTYPE_CONUS_DIMS = _cap_dims_to_max(PTYPE_CONUS_DIMS, max_dimension_px)
+    PTYPE_NE_DIMS = _cap_dims_to_max(PTYPE_NE_DIMS, max_dimension_px)
+    SNOW_CONUS_DIMS = _cap_dims_to_max(SNOW_CONUS_DIMS, max_dimension_px)
+    SNOW_NE_DIMS = _cap_dims_to_max(SNOW_NE_DIMS, max_dimension_px)
+    NH_SOURCE_DIMS = _cap_dims_to_max(NH_SOURCE_DIMS, max_dimension_px)
+    NH_POLAR_DIMS = max(480, min(int(NH_POLAR_DIMS), int(max_dimension_px)))
+
+GEOGRAPHY_DETAIL_MODE = str(geography_detail_env or 'auto').strip().lower()
+if GEOGRAPHY_DETAIL_MODE not in ('auto', 'high', 'low'):
+    print(f'[{ts()}] Invalid WN2_GEOGRAPHY_DETAIL="{GEOGRAPHY_DETAIL_MODE}", defaulting to auto.')
+    GEOGRAPHY_DETAIL_MODE = 'auto'
+
+
+def _use_detailed_geography(width=None, height=None):
+    if GEOGRAPHY_DETAIL_MODE == 'high':
+        return True
+    if GEOGRAPHY_DETAIL_MODE == 'low':
+        return False
+
+    longest = 0
+    for value in (width, height, max_dimension_px):
+        try:
+            if value is not None:
+                longest = max(longest, int(value))
+        except (TypeError, ValueError):
+            continue
+
+    if longest <= 0:
+        # Auto mode defaults to detailed outlines unless explicitly size-capped low.
+        return True
+    return longest >= 840
+
 workers_env = os.environ.get('EXPORT_WORKERS')
 try:
     EXPORT_WORKERS = int(workers_env) if workers_env else (2 if FAST_RENDER else 2)
@@ -294,6 +391,10 @@ except ValueError:
     EXPORT_WORKERS = 2
 EXPORT_WORKERS = max(1, min(4, EXPORT_WORKERS))
 print(f'[{ts()}] Render profile: fast={FAST_RENDER}, workers={EXPORT_WORKERS}, dims={ANOMALY_DIMS}/{CONUS_DIMS}.')
+if max_dimension_px is not None:
+    print(f'[{ts()}] Max output dimension cap: {max_dimension_px}px.')
+print(f'[{ts()}] NH render mode: {NH_RENDER_MODE}.')
+print(f'[{ts()}] Geography detail mode: {GEOGRAPHY_DETAIL_MODE}.')
 
 ANOMALY_PALETTE = [
     '#6a1b9a', '#7e57c2', '#5c6bc0', '#3f7fcf', '#5ea5de', '#8cc3e8',
@@ -368,13 +469,11 @@ T2M_ANOM_F_MAX = 40.0
 CLIMO_H500_COLLECTION = (
     ee.ImageCollection(CLIMO_ASSET)
     .select(CLIMO_H500_BAND)
-    .filter(ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year'))
 )
 CLIMO_H500_CACHE = {}
 CLIMO_T2M_COLLECTION = (
     ee.ImageCollection(CLIMO_ASSET)
     .select('T2M')
-    .filter(ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year'))
 )
 CLIMO_T2M_CACHE = {}
 CLIMO_SIZE_LOGGED = set()
@@ -396,10 +495,26 @@ PRODUCT_OPTIONS = [
 SNOW_PRODUCT_KEYS = {'conus_snow_accum', 'ne_snow_accum', 'ne_zoom_snow_accum'}
 PRODUCT_MODE = (str(product_mode_env or '').strip().lower() or 'all')
 USE_CUSTOM_PRODUCT_SELECTION = (event_name == 'workflow_dispatch' and PRODUCT_MODE == 'custom')
+SELECTED_PRODUCT_KEYS = set(_parse_product_keys_csv(selected_products_csv_env))
+KNOWN_PRODUCT_KEYS = {k for k, _, _, _ in PRODUCT_OPTIONS}
+UNKNOWN_SELECTED_PRODUCT_KEYS = sorted(SELECTED_PRODUCT_KEYS - KNOWN_PRODUCT_KEYS)
+
+if UNKNOWN_SELECTED_PRODUCT_KEYS:
+    print(
+        f'[{ts()}] Ignoring unknown custom product keys from WN2_SELECTED_PRODUCTS: '
+        f'{", ".join(UNKNOWN_SELECTED_PRODUCT_KEYS)}'
+    )
 
 ENABLED_PRODUCTS = []
 for key, label, pattern, raw_flag in PRODUCT_OPTIONS:
-    enabled = _select_product_flag(raw_flag, default=True) if USE_CUSTOM_PRODUCT_SELECTION else True
+    flag_enabled = _select_product_flag(raw_flag, default=True)
+    if USE_CUSTOM_PRODUCT_SELECTION:
+        if SELECTED_PRODUCT_KEYS:
+            enabled = key in SELECTED_PRODUCT_KEYS and flag_enabled
+        else:
+            enabled = flag_enabled
+    else:
+        enabled = True
     if enabled:
         ENABLED_PRODUCTS.append((key, label, pattern))
 
@@ -408,12 +523,15 @@ if not ENABLED_PRODUCTS:
         print(f'[{ts()}] No products enabled for this shard; exiting early (WN2_ALLOW_NO_PRODUCTS=1).')
         raise SystemExit(0)
     raise ValueError(
-        'No products selected. Enable at least one WN2_RUN_* product flag or select a checkbox in workflow_dispatch.'
+        'No products selected. Set WN2_SELECTED_PRODUCTS (or custom_products_csv in workflow_dispatch) '
+        'or enable at least one WN2_RUN_* product flag.'
     )
 
 print(f'[{ts()}] Enabled products: {[k for k, _, _ in ENABLED_PRODUCTS]}')
 if product_mode_env:
     print(f'[{ts()}] Workflow product mode: {PRODUCT_MODE} (custom_selection={USE_CUSTOM_PRODUCT_SELECTION})')
+if USE_CUSTOM_PRODUCT_SELECTION and SELECTED_PRODUCT_KEYS:
+    print(f'[{ts()}] Custom products from WN2_SELECTED_PRODUCTS: {sorted(SELECTED_PRODUCT_KEYS)}')
 
 
 def cleanup_old_products():
@@ -671,6 +789,17 @@ if climo_window_days_raw is None:
     CLIMO_DOY_WINDOW_DAYS = 5
 else:
     CLIMO_DOY_WINDOW_DAYS = max(0, min(15, climo_window_days_raw))
+climo_start_year_raw = _parse_int(climo_start_year_env)
+climo_end_year_raw = _parse_int(climo_end_year_env)
+if climo_start_year_raw is not None or climo_end_year_raw is not None:
+    parsed_start = climo_start_year_raw if climo_start_year_raw is not None else CLIMO_START_YEAR
+    parsed_end = climo_end_year_raw if climo_end_year_raw is not None else CLIMO_END_YEAR
+    parsed_start = max(1980, min(2100, parsed_start))
+    parsed_end = max(1980, min(2100, parsed_end))
+    if parsed_end < parsed_start:
+        parsed_end = parsed_start
+    CLIMO_START_YEAR = parsed_start
+    CLIMO_END_YEAR = parsed_end
 short_range_accuracy_hours_raw = _parse_int(short_range_accuracy_hours_env)
 if short_range_accuracy_hours_raw is None:
     SHORT_RANGE_ACCURACY_HOURS = 24
@@ -983,12 +1112,15 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global', anal
     day = int(valid_utc.day)
     hour = int(valid_utc.hour)
     scale_key = int(max(25000, float(analysis_scale_m))) if analysis_scale_m is not None else None
-    cache_key = (doy, hour, cache_tag, scale_key)
+    cache_key = (CLIMO_START_YEAR, CLIMO_END_YEAR, doy, hour, cache_tag, scale_key)
     cached = CLIMO_H500_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    hour_collection = CLIMO_H500_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    base_collection = CLIMO_H500_COLLECTION.filter(
+        ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year')
+    )
+    hour_collection = base_collection.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     if CLIMO_DOY_WINDOW_DAYS <= 0:
         window_collection = hour_collection.filter(
@@ -1000,16 +1132,16 @@ def z500_climo_1991_2020_m(valid_utc, region_geom=None, cache_tag='global', anal
         start_doy = doy - CLIMO_DOY_WINDOW_DAYS
         end_doy = doy + CLIMO_DOY_WINDOW_DAYS
         window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
-    fallback_collection = CLIMO_H500_COLLECTION.filter(
+    fallback_collection = base_collection.filter(
         ee.Filter.calendarRange(month, month, 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
-    count_key = ('h500', month, day, hour)
+    count_key = ('h500', CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
     window_n = CLIMO_COUNT_CACHE.get(count_key)
     if window_n is None:
         window_n = int(window_collection.size().getInfo())
         CLIMO_COUNT_CACHE[count_key] = window_n
-    size_log_key = ('h500', month, day, hour)
+    size_log_key = ('h500', CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
             fallback_n = int(fallback_collection.size().getInfo())
@@ -1055,12 +1187,15 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analy
     day = int(valid_utc.day)
     hour = int(valid_utc.hour)
     scale_key = int(max(15000, float(analysis_scale_m))) if analysis_scale_m is not None else None
-    cache_key = (doy, hour, cache_tag, scale_key)
+    cache_key = (CLIMO_START_YEAR, CLIMO_END_YEAR, doy, hour, cache_tag, scale_key)
     cached = CLIMO_T2M_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    hour_collection = CLIMO_T2M_COLLECTION.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    base_collection = CLIMO_T2M_COLLECTION.filter(
+        ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year')
+    )
+    hour_collection = base_collection.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     if CLIMO_DOY_WINDOW_DAYS <= 0:
         window_collection = hour_collection.filter(
@@ -1072,16 +1207,16 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analy
         start_doy = doy - CLIMO_DOY_WINDOW_DAYS
         end_doy = doy + CLIMO_DOY_WINDOW_DAYS
         window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
-    fallback_collection = CLIMO_T2M_COLLECTION.filter(
+    fallback_collection = base_collection.filter(
         ee.Filter.calendarRange(month, month, 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
-    count_key = ('t2m', month, day, hour)
+    count_key = ('t2m', CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
     window_n = CLIMO_COUNT_CACHE.get(count_key)
     if window_n is None:
         window_n = int(window_collection.size().getInfo())
         CLIMO_COUNT_CACHE[count_key] = window_n
-    size_log_key = ('t2m', month, day, hour)
+    size_log_key = ('t2m', CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
             fallback_n = int(fallback_collection.size().getInfo())
@@ -1358,7 +1493,10 @@ def _select_climo_source_collection(base_collection, valid_utc, region_geom, cou
     hour = int(valid_utc.hour)
     doy = valid_utc.timetuple().tm_yday
 
-    hour_collection = base_collection.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    year_filtered = base_collection.filter(
+        ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year')
+    )
+    hour_collection = year_filtered.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     if CLIMO_DOY_WINDOW_DAYS <= 0:
         window_collection = hour_collection.filter(
@@ -1371,17 +1509,17 @@ def _select_climo_source_collection(base_collection, valid_utc, region_geom, cou
         end_doy = doy + CLIMO_DOY_WINDOW_DAYS
         window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
 
-    fallback_collection = base_collection.filter(
+    fallback_collection = year_filtered.filter(
         ee.Filter.calendarRange(month, month, 'month')
     ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
 
-    count_key = (count_cache_prefix, month, day, hour)
+    count_key = (count_cache_prefix, CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
     window_n = CLIMO_COUNT_CACHE.get(count_key)
     if window_n is None:
         window_n = int(window_collection.size().getInfo())
         CLIMO_COUNT_CACHE[count_key] = window_n
-    size_log_key = (count_cache_prefix, month, day, hour)
+    size_log_key = (count_cache_prefix, CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
             fallback_n = int(fallback_collection.size().getInfo())
@@ -1603,8 +1741,200 @@ def _render_local_anomaly_tile(
         out_file,
         format='jpg',
         dpi=dpi,
-        bbox_inches='tight',
-        pad_inches=0,
+        pil_kwargs={'quality': 97, 'subsampling': 0},
+    )
+    plt.close(fig)
+
+
+def _render_local_anomaly_polar(
+    anomaly_field,
+    contour_field,
+    bounds,
+    out_file,
+    width,
+    height,
+    palette,
+    vmin,
+    vmax,
+    anomaly_step=30,
+    minor_interval=6,
+    major_interval=12,
+    minor_color='#2a2a2a',
+    major_color='#141414',
+    minor_lw=0.56,
+    major_lw=1.0,
+    minor_alpha=0.60,
+    major_alpha=0.92,
+    grid_color='#b8b8b8',
+    grid_alpha=0.40,
+    lon0=NH_LON0,
+    highlight_level=None,
+    highlight_color='#2455ff',
+):
+    import numpy as np
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+
+    anomaly_arr = np.asarray(anomaly_field, dtype=np.float32)
+    contour_arr = np.asarray(contour_field, dtype=np.float32)
+    if anomaly_arr.shape != contour_arr.shape:
+        anomaly_arr, contour_arr = _align_arrays(anomaly_arr, contour_arr)
+
+    anomaly_arr = _fill_nan_gaps(anomaly_arr, fill_value=0.0)
+    contour_fill = float(np.nanmean(contour_arr)) if np.isfinite(contour_arr).any() else 540.0
+    contour_arr = _fill_nan_gaps(contour_arr, fill_value=contour_fill)
+    anomaly_arr = np.clip(anomaly_arr * float(ANOMALY_DISPLAY_GAIN), float(vmin), float(vmax))
+
+    lon_w, lat_s, lon_e, lat_n = [float(v) for v in bounds]
+    lat_min = max(float(lat_s), 20.0)
+    lat_max = min(float(lat_n), NH_SOURCE_REGION[3])
+    if lat_max <= lat_min:
+        lat_min = min(float(lat_s), float(lat_n))
+        lat_max = max(float(lat_s), float(lat_n))
+
+    lat = np.linspace(lat_max, lat_min, anomaly_arr.shape[0], dtype=np.float32)
+    lon = np.linspace(lon_w, lon_e, anomaly_arr.shape[1], dtype=np.float32)
+
+    lon_rel = np.mod(lon - float(lon0) + 360.0, 360.0)
+    sort_idx = np.argsort(lon_rel)
+    lon_sorted = lon_rel[sort_idx]
+    anomaly_sorted = anomaly_arr[:, sort_idx]
+    contour_sorted = contour_arr[:, sort_idx]
+    lon_closed = np.concatenate([lon_sorted, [float(lon_sorted[0] + 360.0)]])
+    anomaly_closed = np.concatenate([anomaly_sorted, anomaly_sorted[:, :1]], axis=1)
+    contour_closed = np.concatenate([contour_sorted, contour_sorted[:, :1]], axis=1)
+
+    def _stereo_r(lat_deg):
+        lat_deg = np.asarray(lat_deg, dtype=np.float64)
+        lat_rad = np.radians(np.clip(lat_deg, -89.999, 89.999))
+        return np.tan((math.pi / 4.0) - (lat_rad / 2.0))
+
+    r = _stereo_r(lat)
+    theta = np.deg2rad(lon_closed)
+    theta_grid, r_grid = np.meshgrid(theta, r)
+    r_edge = float(_stereo_r(lat_min))
+    if not math.isfinite(r_edge) or r_edge <= 0:
+        r_edge = float(np.nanmax(r))
+
+    cmap = LinearSegmentedColormap.from_list('wn2_anom_polar', list(palette), N=256)
+    norm = TwoSlopeNorm(vmin=float(vmin), vcenter=0.0, vmax=float(vmax))
+    anom_levels = np.arange(
+        float(vmin),
+        float(vmax) + float(anomaly_step) * 0.5,
+        float(anomaly_step),
+        dtype=np.float32,
+    )
+
+    minor_levels = _contour_levels(contour_closed, minor_interval)
+    major_levels = _contour_levels(contour_closed, major_interval)
+    if minor_levels is not None and major_interval and float(minor_interval) < float(major_interval):
+        major_mod = float(major_interval)
+        minor_levels = np.array(
+            [
+                float(v)
+                for v in minor_levels
+                if abs((float(v) / major_mod) - round(float(v) / major_mod)) > 1e-6
+            ],
+            dtype=np.float32,
+        )
+        if minor_levels.size == 0:
+            minor_levels = None
+    else:
+        minor_levels = None
+
+    dpi = 100
+    fig = plt.figure(figsize=(max(2, width) / dpi, max(2, height) / dpi), dpi=dpi, frameon=False)
+    fig.patch.set_facecolor(BASEMAP_OCEAN_COLOR)
+    ax = fig.add_axes([0.02, 0.02, 0.82, 0.96], projection='polar')
+    ax.set_facecolor(BASEMAP_OCEAN_COLOR)
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    ax.set_ylim(0.0, r_edge)
+
+    ax.contourf(
+        theta_grid,
+        r_grid,
+        anomaly_closed,
+        levels=anom_levels,
+        cmap=cmap,
+        norm=norm,
+        extend='both',
+        antialiased=False,
+        zorder=1,
+    )
+
+    if minor_levels is not None:
+        ax.contour(
+            theta_grid,
+            r_grid,
+            contour_closed,
+            levels=minor_levels,
+            colors=minor_color,
+            linewidths=minor_lw,
+            alpha=minor_alpha,
+            zorder=3,
+        )
+    if major_levels is not None:
+        ax.contour(
+            theta_grid,
+            r_grid,
+            contour_closed,
+            levels=major_levels,
+            colors=major_color,
+            linewidths=major_lw,
+            alpha=major_alpha,
+            zorder=4,
+        )
+
+    if highlight_level is not None:
+        try:
+            ax.contour(
+                theta_grid,
+                r_grid,
+                contour_closed,
+                levels=[float(highlight_level)],
+                colors=highlight_color,
+                linewidths=max(0.9, major_lw + 0.1),
+                alpha=0.95,
+                zorder=5,
+            )
+        except Exception:
+            pass
+
+    ax.set_xticks(np.deg2rad(np.arange(0, 360, 30, dtype=np.float32)))
+    ring_lats = np.arange(20, 90, 10, dtype=np.float32)
+    ring_ticks = np.array([_stereo_r(v) for v in ring_lats], dtype=np.float64)
+    ring_ticks = ring_ticks[np.isfinite(ring_ticks)]
+    ring_ticks = ring_ticks[(ring_ticks > 0.0) & (ring_ticks < r_edge)]
+    if ring_ticks.size:
+        ax.set_yticks(np.sort(ring_ticks))
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.grid(True, linestyle='--', linewidth=0.75, color=grid_color, alpha=grid_alpha)
+    ax.spines['polar'].set_color('#303030')
+    ax.spines['polar'].set_linewidth(1.2)
+
+    cax = fig.add_axes([0.87, 0.15, 0.03, 0.70])
+    cbar = fig.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
+        cax=cax,
+        orientation='vertical',
+        extend='both',
+    )
+    cbar_ticks = np.arange(float(vmin), float(vmax) + 1.0, float(anomaly_step) * 2.0)
+    cbar.set_ticks(cbar_ticks)
+    cbar.ax.tick_params(labelsize=9, length=2, width=0.8, colors='#202020')
+    cbar.outline.set_linewidth(0.8)
+    cbar.outline.set_edgecolor('#4a4a4a')
+    cbar.set_label('500-hPa Height Anomaly (m)', fontsize=9, color='#202020', labelpad=8)
+
+    fig.savefig(
+        out_file,
+        format='jpg',
+        dpi=dpi,
         pil_kwargs={'quality': 97, 'subsampling': 0},
     )
     plt.close(fig)
@@ -1615,7 +1945,8 @@ def _overlay_png_on_jpg(base_jpg, overlay_png):
 
     with Image.open(base_jpg).convert('RGBA') as base, Image.open(overlay_png).convert('RGBA') as overlay:
         if overlay.size != base.size:
-            overlay = overlay.resize(base.size, Image.BILINEAR)
+            resample_nearest = Image.Resampling.NEAREST if hasattr(Image, 'Resampling') else Image.NEAREST
+            overlay = overlay.resize(base.size, resample_nearest)
         merged = Image.alpha_composite(base, overlay)
         merged.convert('RGB').save(base_jpg, format='JPEG', quality=97, subsampling=0)
 
@@ -2095,19 +2426,16 @@ def remap_nh_to_polar(
     out_file,
     lon0=NH_LON0,
     lat_min=20.0,
-    lat_max=88.5,
+    lat_max=NH_SOURCE_REGION[3],
     lon_w=NH_SOURCE_REGION[0],
     lon_e=NH_SOURCE_REGION[2],
 ):
     from PIL import Image, ImageDraw
-    import numpy as np
 
     with Image.open(out_file) as src:
         src_img = src.convert('RGB')
     sw, sh = src_img.size
     src_px = src_img.load()
-    src_arr = np.asarray(src_img, dtype=np.float32)
-    row_mean = src_arr.mean(axis=1)
     edge_blend = max(2, min(10, sw // 160))
     if sw > (edge_blend * 2 + 2):
         for yy in range(sh):
@@ -2143,8 +2471,6 @@ def remap_nh_to_polar(
     lon_span = float(lon_e) - float(lon_w)
     if lon_span <= 0:
         lon_span = 360.0
-    pole_cap_inner = 0.06
-    pole_cap_outer = 0.18
 
     for y in range(out_size):
         dy = (y - cy) / radius
@@ -2197,24 +2523,7 @@ def remap_nh_to_polar(
             rch = int(round(c00[0] * w00 + c10[0] * w10 + c01[0] * w01 + c11[0] * w11))
             gch = int(round(c00[1] * w00 + c10[1] * w10 + c01[1] * w01 + c11[1] * w11))
             bch = int(round(c00[2] * w00 + c10[2] * w10 + c01[2] * w01 + c11[2] * w11))
-            if r < pole_cap_outer:
-                c0 = row_mean[y0]
-                c1 = row_mean[y1]
-                avg_r = float(c0[0] * (1.0 - wy) + c1[0] * wy)
-                avg_g = float(c0[1] * (1.0 - wy) + c1[1] * wy)
-                avg_b = float(c0[2] * (1.0 - wy) + c1[2] * wy)
-                if r <= pole_cap_inner:
-                    mix_w = 1.0
-                else:
-                    mix_w = (pole_cap_outer - r) / max(1e-6, (pole_cap_outer - pole_cap_inner))
-                mix_w = max(0.0, min(1.0, mix_w))
-                out_px[x, y] = (
-                    int(round(avg_r * mix_w + rch * (1.0 - mix_w))),
-                    int(round(avg_g * mix_w + gch * (1.0 - mix_w))),
-                    int(round(avg_b * mix_w + bch * (1.0 - mix_w))),
-                )
-            else:
-                out_px[x, y] = (rch, gch, bch)
+            out_px[x, y] = (rch, gch, bch)
 
     draw = ImageDraw.Draw(out_img)
     draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(44, 44, 44), width=2)
@@ -2364,13 +2673,17 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
 
 def _generate_z500_anomaly_map_local(img, h, region, prefix):
     if prefix == 'nh_z500a':
-        map_dims = NH_SOURCE_DIMS
+        if USE_NH_TRUE_POLAR_RENDER:
+            polar_width = max(int(round(NH_POLAR_DIMS * 1.18)), NH_POLAR_DIMS + 120)
+            map_dims = f'{polar_width}x{NH_POLAR_DIMS}'
+        else:
+            map_dims = NH_SOURCE_DIMS
         sample_bounds = NH_SOURCE_REGION
         plans = [
             {'dims': map_dims, 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[0], 'minor_interval': 6, 'major_interval': 12, 'include_z540': True, 'include_border': True, 'label': 'local base'},
-            {'dims': shrink_dimensions(map_dims), 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[1], 'minor_interval': 0, 'major_interval': 18, 'include_z540': True, 'include_border': True, 'label': 'local coarse'},
-            {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[2], 'minor_interval': 0, 'major_interval': 24, 'include_z540': False, 'include_border': True, 'label': 'local extra coarse'},
-            {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': int(LOCAL_Z500_NH_SCALES_M[2] * 1.7), 'minor_interval': 0, 'major_interval': 30, 'include_z540': False, 'include_border': False, 'label': 'local emergency'},
+            {'dims': (map_dims if USE_NH_TRUE_POLAR_RENDER else shrink_dimensions(map_dims)), 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[1], 'minor_interval': 0, 'major_interval': 18, 'include_z540': True, 'include_border': True, 'label': 'local coarse'},
+            {'dims': (map_dims if USE_NH_TRUE_POLAR_RENDER else shrink_dimensions(shrink_dimensions(map_dims))), 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[2], 'minor_interval': 0, 'major_interval': 24, 'include_z540': False, 'include_border': True, 'label': 'local extra coarse'},
+            {'dims': (map_dims if USE_NH_TRUE_POLAR_RENDER else shrink_dimensions(shrink_dimensions(map_dims))), 'sample_scale_m': int(LOCAL_Z500_NH_SCALES_M[2] * 1.7), 'minor_interval': 0, 'major_interval': 30, 'include_z540': False, 'include_border': False, 'label': 'local emergency'},
         ]
     else:
         map_dims = region_dimensions(ANOMALY_DIMS, region)
@@ -2389,7 +2702,8 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
 
     if is_long_range_hour(h):
         for plan in plans:
-            plan['dims'] = adaptive_dimensions_for_hour(plan['dims'], h, long_factor=0.92, min_w=760, min_h=300)
+            if not (prefix == 'nh_z500a' and USE_NH_TRUE_POLAR_RENDER):
+                plan['dims'] = adaptive_dimensions_for_hour(plan['dims'], h, long_factor=0.92, min_w=760, min_h=300)
             plan['sample_scale_m'] = int(plan['sample_scale_m'] * 1.2)
             if plan.get('minor_interval', 0) > 0:
                 plan['minor_interval'] = max(12, int(plan['minor_interval']))
@@ -2446,36 +2760,63 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
             anomaly_m_arr = forecast_m_arr - climo_m_arr
             contour_dam_arr = forecast_m_arr / 10.0
 
-            _render_local_anomaly_tile(
-                anomaly_field=anomaly_m_arr,
-                contour_field=contour_dam_arr,
-                bounds=sample_bounds,
-                out_file=out_file,
-                width=width,
-                height=height,
-                palette=ANOMALY_PALETTE,
-                vmin=ANOMALY_MIN_M,
-                vmax=ANOMALY_MAX_M,
-                minor_interval=plan['minor_interval'],
-                major_interval=plan['major_interval'],
-                minor_color='#2a2a2a',
-                major_color='#141414',
-                major_lw=1.0,
-                highlight_level=(540 if plan['include_z540'] else None),
-                highlight_color='#2455ff',
-            )
+            if prefix == 'nh_z500a' and USE_NH_TRUE_POLAR_RENDER:
+                _render_local_anomaly_polar(
+                    anomaly_field=anomaly_m_arr,
+                    contour_field=contour_dam_arr,
+                    bounds=sample_bounds,
+                    out_file=out_file,
+                    width=width,
+                    height=height,
+                    palette=ANOMALY_PALETTE,
+                    vmin=ANOMALY_MIN_M,
+                    vmax=ANOMALY_MAX_M,
+                    anomaly_step=30,
+                    minor_interval=max(6, int(plan['minor_interval'] or 6)),
+                    major_interval=max(12, int(plan['major_interval'] or 12)),
+                    minor_color='#303030',
+                    major_color='#101010',
+                    minor_lw=0.56,
+                    major_lw=1.0,
+                    minor_alpha=0.62,
+                    major_alpha=0.94,
+                    grid_color='#b8b8b8',
+                    grid_alpha=0.40,
+                    lon0=NH_LON0,
+                    highlight_level=(540 if plan['include_z540'] else None),
+                    highlight_color='#2455ff',
+                )
+            else:
+                _render_local_anomaly_tile(
+                    anomaly_field=anomaly_m_arr,
+                    contour_field=contour_dam_arr,
+                    bounds=sample_bounds,
+                    out_file=out_file,
+                    width=width,
+                    height=height,
+                    palette=ANOMALY_PALETTE,
+                    vmin=ANOMALY_MIN_M,
+                    vmax=ANOMALY_MAX_M,
+                    minor_interval=plan['minor_interval'],
+                    major_interval=plan['major_interval'],
+                    minor_color='#2a2a2a',
+                    major_color='#141414',
+                    major_lw=1.0,
+                    highlight_level=(540 if plan['include_z540'] else None),
+                    highlight_color='#2455ff',
+                )
 
-            if plan.get('include_border', True):
+            if not (prefix == 'nh_z500a' and USE_NH_TRUE_POLAR_RENDER) and plan.get('include_border', True):
                 border_png = get_cached_border_overlay_png(
                     sample_bounds,
                     width,
                     height,
                     include_states=False,
-                    detailed=False,
+                    detailed=_use_detailed_geography(width, height),
                 )
                 _overlay_png_on_jpg(out_file, border_png)
 
-            if prefix == 'nh_z500a':
+            if prefix == 'nh_z500a' and not USE_NH_TRUE_POLAR_RENDER:
                 remap_nh_to_polar(out_file, lon0=NH_LON0)
             annotate_map_file(out_file, prefix, h)
             return
@@ -2494,6 +2835,8 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
 
 
 def generate_z500_anomaly_map(img, h, region, prefix):
+    if prefix == 'nh_z500a' and USE_NH_TRUE_POLAR_RENDER:
+        return _generate_z500_anomaly_map_local(img, h, NH_SOURCE_REGION, prefix)
     if LOCAL_TRUE_ANOMALY_RENDER:
         return _generate_z500_anomaly_map_local(img, h, region, prefix)
 
@@ -2563,7 +2906,7 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 border_overlay(
                     include_states=False,
                     region_geom=tile_geom,
-                    detailed=False,
+                    detailed=_use_detailed_geography(),
                 )
             )
         return ee.ImageCollection(overlays).mosaic()
@@ -3169,7 +3512,7 @@ def _generate_conus_t2m_anomaly_map_local(img, h, region=CONUS_THUMB_REGION, key
                     width,
                     height,
                     include_states=True,
-                    detailed=False,
+                    detailed=_use_detailed_geography(width, height),
                 )
                 _overlay_png_on_jpg(out_file, border_png)
 

@@ -45,6 +45,36 @@ on:
         required: false
         default: "24"
         type: string
+      max_dimension:
+        description: "Maximum map dimension in pixels (caps width/height, e.g. 720, 900)"
+        required: false
+        default: "900"
+        type: choice
+        options:
+          - "720"
+          - "840"
+          - "900"
+          - "960"
+          - "1000"
+      geography_detail:
+        description: "Border detail mode (auto/high/low)"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - high
+          - low
+      climo_start_year:
+        description: "Climatology start year (example: 2001 for a 20-year 2001-2020 baseline)"
+        required: false
+        default: "1991"
+        type: string
+      climo_end_year:
+        description: "Climatology end year (example: 2020)"
+        required: false
+        default: "2020"
+        type: string
       export_workers:
         description: "Parallel worker count for non-z500 products (1-4)"
         required: false
@@ -63,56 +93,19 @@ on:
         options:
           - all
           - custom
-      run_nh_z500a:
-        description: "Generate NH 500mb anomaly"
+      nh_render_mode:
+        description: "NH rendering mode (legacy keeps current style; polar is direct stereographic)"
         required: false
-        default: true
-        type: boolean
-      run_na_z500a:
-        description: "Generate NA 500mb anomaly"
+        default: "legacy"
+        type: choice
+        options:
+          - legacy
+          - polar
+      custom_products_csv:
+        description: "Custom mode product keys (comma-separated, no spaces): nh_z500a,na_z500a,conus_mslp_ptype,ne_mslp_ptype,conus_vort500,conus_t2m,conus_t2m_anom,conus_snow_accum,ne_snow_accum,ne_zoom_snow_accum"
         required: false
-        default: true
-        type: boolean
-      run_conus_mslp_ptype:
-        description: "Generate CONUS MSLP + P-Type"
-        required: false
-        default: true
-        type: boolean
-      run_ne_mslp_ptype:
-        description: "Generate Northeast MSLP + P-Type"
-        required: false
-        default: true
-        type: boolean
-      run_conus_vort500:
-        description: "Generate CONUS 500mb vorticity"
-        required: false
-        default: true
-        type: boolean
-      run_conus_t2m:
-        description: "Generate USA region 2m temperature"
-        required: false
-        default: true
-        type: boolean
-      run_conus_t2m_anom:
-        description: "Generate USA region 2m temperature anomaly"
-        required: false
-        default: true
-        type: boolean
-      run_conus_snow_accum:
-        description: "Generate CONUS snowfall accumulation"
-        required: false
-        default: true
-        type: boolean
-      run_ne_snow_accum:
-        description: "Generate Northeast snowfall accumulation"
-        required: false
-        default: true
-        type: boolean
-      run_ne_zoom_snow_accum:
-        description: "Generate New England zoom snowfall accumulation"
-        required: false
-        default: true
-        type: boolean
+        default: "nh_z500a,na_z500a,conus_mslp_ptype,ne_mslp_ptype,conus_vort500,conus_t2m,conus_t2m_anom,conus_snow_accum,ne_snow_accum,ne_zoom_snow_accum"
+        type: string
   
 concurrency:
   group: wn2-pages
@@ -169,23 +162,29 @@ jobs:
           RUN_INIT_UTC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_init_utc || '' }}
           SNOW_RATIO_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode == 'custom' && (github.event.inputs.snow_ratio_csv || '10,12,15,20') || '10' }}
           RUN_HISTORY_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_history_hours || '24' }}
+          WN2_MAX_DIMENSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.max_dimension || '900' }}
+          WN2_GEOGRAPHY_DETAIL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.geography_detail || 'auto' }}
+          WN2_CLIMO_START_YEAR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_start_year || '' }}
+          WN2_CLIMO_END_YEAR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_end_year || '' }}
           EXPORT_WORKERS: ${{ matrix.phase == 'core' && (github.event_name == 'workflow_dispatch' && github.event.inputs.export_workers || '2') || '1' }}
           WN2_PRODUCT_MODE: custom
+          WN2_NH_RENDER_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.nh_render_mode || 'legacy' }}
           WN2_HOUR_SHARD_INDEX: ${{ matrix.shard_index }}
           WN2_HOUR_SHARD_TOTAL: ${{ matrix.shard_total }}
           WN2_RESUME_EXISTING: "1"
           WN2_SKIP_CLEANUP_RUN_DIR: "1"
           WN2_ALLOW_NO_PRODUCTS: "1"
-          WN2_RUN_NH_Z500A: ${{ matrix.phase == 'z500' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_nh_z500a == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_NA_Z500A: ${{ matrix.phase == 'z500' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_na_z500a == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_CONUS_MSLP_PTYPE: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_mslp_ptype == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_NE_MSLP_PTYPE: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_mslp_ptype == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_CONUS_VORT500: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_vort500 == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_CONUS_T2M: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_t2m == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_CONUS_T2M_ANOM: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_t2m_anom == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_CONUS_SNOW_ACCUM: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_snow_accum == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_NE_SNOW_ACCUM: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_snow_accum == 'true' && '1' || ''))) || '' }}
-          WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ matrix.phase == 'core' && (github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_zoom_snow_accum == 'true' && '1' || ''))) || '' }}
+          WN2_SELECTED_PRODUCTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode == 'custom' && github.event.inputs.custom_products_csv || '' }}
+          WN2_RUN_NH_Z500A: ${{ matrix.phase == 'z500' && '1' || '' }}
+          WN2_RUN_NA_Z500A: ${{ matrix.phase == 'z500' && '1' || '' }}
+          WN2_RUN_CONUS_MSLP_PTYPE: ${{ matrix.phase == 'core' && '1' || '' }}
+          WN2_RUN_NE_MSLP_PTYPE: ${{ matrix.phase == 'core' && '1' || '' }}
+          WN2_RUN_CONUS_VORT500: ${{ matrix.phase == 'core' && '1' || '' }}
+          WN2_RUN_CONUS_T2M: ${{ matrix.phase == 'core' && '1' || '' }}
+          WN2_RUN_CONUS_T2M_ANOM: ${{ matrix.phase == 'core' && '1' || '' }}
+          WN2_RUN_CONUS_SNOW_ACCUM: ${{ matrix.phase == 'core' && '1' || '' }}
+          WN2_RUN_NE_SNOW_ACCUM: ${{ matrix.phase == 'core' && '1' || '' }}
+          WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ matrix.phase == 'core' && '1' || '' }}
         run: python main.py
 
       - name: Report generator failure (shard)
@@ -272,20 +271,26 @@ jobs:
           RUN_INIT_UTC: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_init_utc || '' }}
           SNOW_RATIO_CSV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode == 'custom' && (github.event.inputs.snow_ratio_csv || '10,12,15,20') || '10' }}
           RUN_HISTORY_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_history_hours || '24' }}
+          WN2_MAX_DIMENSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.max_dimension || '900' }}
+          WN2_GEOGRAPHY_DETAIL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.geography_detail || 'auto' }}
+          WN2_CLIMO_START_YEAR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_start_year || '' }}
+          WN2_CLIMO_END_YEAR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_end_year || '' }}
           EXPORT_WORKERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.export_workers || '2' }}
           WN2_PRODUCT_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode || 'all' }}
+          WN2_NH_RENDER_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.nh_render_mode || 'legacy' }}
+          WN2_SELECTED_PRODUCTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode == 'custom' && github.event.inputs.custom_products_csv || '' }}
           WN2_RESUME_EXISTING: "1"
           WN2_SKIP_CLEANUP_RUN_DIR: "1"
-          WN2_RUN_NH_Z500A: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_nh_z500a == 'true' && '1' || '')) }}
-          WN2_RUN_NA_Z500A: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_na_z500a == 'true' && '1' || '')) }}
-          WN2_RUN_CONUS_MSLP_PTYPE: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_mslp_ptype == 'true' && '1' || '')) }}
-          WN2_RUN_NE_MSLP_PTYPE: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_mslp_ptype == 'true' && '1' || '')) }}
-          WN2_RUN_CONUS_VORT500: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_vort500 == 'true' && '1' || '')) }}
-          WN2_RUN_CONUS_T2M: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_t2m == 'true' && '1' || '')) }}
-          WN2_RUN_CONUS_T2M_ANOM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_t2m_anom == 'true' && '1' || '')) }}
-          WN2_RUN_CONUS_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_conus_snow_accum == 'true' && '1' || '')) }}
-          WN2_RUN_NE_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_snow_accum == 'true' && '1' || '')) }}
-          WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ github.event_name != 'workflow_dispatch' && '1' || (github.event.inputs.product_mode != 'custom' && '1' || (github.event.inputs.run_ne_zoom_snow_accum == 'true' && '1' || '')) }}
+          WN2_RUN_NH_Z500A: "1"
+          WN2_RUN_NA_Z500A: "1"
+          WN2_RUN_CONUS_MSLP_PTYPE: "1"
+          WN2_RUN_NE_MSLP_PTYPE: "1"
+          WN2_RUN_CONUS_VORT500: "1"
+          WN2_RUN_CONUS_T2M: "1"
+          WN2_RUN_CONUS_T2M_ANOM: "1"
+          WN2_RUN_CONUS_SNOW_ACCUM: "1"
+          WN2_RUN_NE_SNOW_ACCUM: "1"
+          WN2_RUN_NE_ZOOM_SNOW_ACCUM: "1"
         run: python main.py
 
       - name: Report generator failure (reconcile)
