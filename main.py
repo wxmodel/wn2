@@ -304,6 +304,13 @@ ANOMALY_NEG_PALETTE = ['#6f00a8', '#8f45c8', '#5f58cf', '#2f75e2', '#5fa8ef', '#
 ANOMALY_POS_PALETTE = ['#f6e48e', '#f8c06b', '#f39a55', '#ea6e45', '#d93f2f', '#9a1f16']
 ANOMALY_MIN_M = -300
 ANOMALY_MAX_M = 300
+NH_Z500_POLAR_ANOM_MIN_M = -240
+NH_Z500_POLAR_ANOM_MAX_M = 240
+NH_Z500_POLAR_ANOM_STEP_M = 30
+NH_Z500_POLAR_MINOR_INTERVAL = 6
+NH_Z500_POLAR_MAJOR_INTERVAL = 12
+NH_Z500_POLAR_CONTOUR_POLE_CUTOFF_LAT = 80.0
+NH_Z500_POLAR_CENTER_CAP_LAT = 78.0
 ANOMALY_NEUTRAL_M = 6
 ANOMALY_DISPLAY_GAIN = 1.0
 ANOMALY_SMOOTH_RADIUS_PX = 0
@@ -1610,6 +1617,233 @@ def _render_local_anomaly_tile(
     plt.close(fig)
 
 
+def _render_local_anomaly_polar(
+    anomaly_field,
+    contour_field,
+    bounds,
+    out_file,
+    width,
+    height,
+    palette,
+    vmin=NH_Z500_POLAR_ANOM_MIN_M,
+    vmax=NH_Z500_POLAR_ANOM_MAX_M,
+    anomaly_step=NH_Z500_POLAR_ANOM_STEP_M,
+    minor_interval=NH_Z500_POLAR_MINOR_INTERVAL,
+    major_interval=NH_Z500_POLAR_MAJOR_INTERVAL,
+    minor_color='#3a3a3a',
+    major_color='#101010',
+    minor_lw=0.56,
+    major_lw=1.0,
+    minor_alpha=0.60,
+    major_alpha=0.94,
+    grid_color='#b8b8b8',
+    grid_alpha=0.40,
+    lon0=NH_LON0,
+    pole_smooth_start_lat=72.0,
+    pole_smooth_end_lat=86.0,
+    contour_pole_cutoff_lat=NH_Z500_POLAR_CONTOUR_POLE_CUTOFF_LAT,
+    center_cap_lat=NH_Z500_POLAR_CENTER_CAP_LAT,
+):
+    import numpy as np
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
+
+    anomaly_arr = np.asarray(anomaly_field, dtype=np.float32)
+    contour_arr = np.asarray(contour_field, dtype=np.float32)
+    if anomaly_arr.shape != contour_arr.shape:
+        anomaly_arr, contour_arr = _align_arrays(anomaly_arr, contour_arr)
+    anomaly_arr = _fill_nan_gaps(anomaly_arr, fill_value=0.0)
+    contour_fill = float(np.nanmean(contour_arr)) if np.isfinite(contour_arr).any() else 540.0
+    contour_arr = _fill_nan_gaps(contour_arr, fill_value=contour_fill)
+
+    anomaly_arr = anomaly_arr * float(ANOMALY_DISPLAY_GAIN)
+    anomaly_arr = np.clip(anomaly_arr, float(vmin), float(vmax))
+
+    lon_w, lat_s, lon_e, lat_n = [float(v) for v in bounds]
+    lat_min = max(float(lat_s), 20.0)
+    lat_max = min(float(lat_n), 88.5)
+    if lat_max <= lat_min:
+        lat_min = min(float(lat_s), float(lat_n))
+        lat_max = max(float(lat_s), float(lat_n))
+    lat = np.linspace(lat_max, lat_min, anomaly_arr.shape[0], dtype=np.float32)
+    lon = np.linspace(lon_w, lon_e, anomaly_arr.shape[1], dtype=np.float32)
+
+    lon_rel = np.mod(lon - float(lon0) + 360.0, 360.0)
+    sort_idx = np.argsort(lon_rel)
+    lon_sorted = lon_rel[sort_idx]
+    anomaly_sorted = anomaly_arr[:, sort_idx]
+    contour_sorted = contour_arr[:, sort_idx]
+
+    if lat.size > 1:
+        pole_span = max(0.5, float(pole_smooth_end_lat) - float(pole_smooth_start_lat))
+        for ridx, lat_deg in enumerate(lat):
+            if lat_deg <= float(pole_smooth_start_lat):
+                continue
+            blend = (float(lat_deg) - float(pole_smooth_start_lat)) / pole_span
+            blend = max(0.0, min(1.0, blend))
+            if blend <= 0.0:
+                continue
+
+            anom_row = anomaly_sorted[ridx, :]
+            anom_mean = float(np.nanmean(anom_row))
+            if math.isfinite(anom_mean):
+                anomaly_sorted[ridx, :] = (
+                    anom_row * (1.0 - blend) + anom_mean * blend
+                ).astype(np.float32)
+
+            contour_row = contour_sorted[ridx, :]
+            contour_mean = float(np.nanmean(contour_row))
+            if math.isfinite(contour_mean):
+                cblend = min(1.0, blend)
+                contour_sorted[ridx, :] = (
+                    contour_row * (1.0 - cblend) + contour_mean * cblend
+                ).astype(np.float32)
+
+    lon_closed = np.concatenate([lon_sorted, [float(lon_sorted[0] + 360.0)]])
+    anomaly_closed = np.concatenate([anomaly_sorted, anomaly_sorted[:, :1]], axis=1)
+    contour_plot_sorted = contour_sorted.copy()
+    if lat.size:
+        pole_mask = lat >= float(contour_pole_cutoff_lat)
+        if np.any(pole_mask):
+            contour_plot_sorted[pole_mask, :] = np.nan
+    contour_closed = np.concatenate([contour_plot_sorted, contour_plot_sorted[:, :1]], axis=1)
+
+    def _stereo_r(lat_deg):
+        lat_deg = np.asarray(lat_deg, dtype=np.float64)
+        lat_rad = np.radians(np.clip(lat_deg, -89.999, 89.999))
+        return np.tan((math.pi / 4.0) - (lat_rad / 2.0))
+
+    r = _stereo_r(lat)
+    theta = np.deg2rad(lon_closed)
+    theta_grid, r_grid = np.meshgrid(theta, r)
+    r_edge = float(_stereo_r(lat_min))
+    if not math.isfinite(r_edge) or r_edge <= 0:
+        r_edge = float(np.nanmax(r))
+
+    cmap = LinearSegmentedColormap.from_list('wn2_nh_polar_anom', list(palette), N=256)
+    anom_levels = np.arange(
+        float(vmin),
+        float(vmax) + float(anomaly_step) * 0.5,
+        float(anomaly_step),
+        dtype=np.float32,
+    )
+    level_norm = BoundaryNorm(anom_levels, ncolors=cmap.N, clip=True)
+
+    major_levels = _contour_levels(contour_closed, major_interval)
+    minor_levels = _contour_levels(contour_closed, minor_interval)
+    if minor_levels is not None and major_interval and float(minor_interval) < float(major_interval):
+        major_mod = float(major_interval)
+        minor_levels = np.array(
+            [
+                float(v)
+                for v in minor_levels
+                if abs((float(v) / major_mod) - round(float(v) / major_mod)) > 1e-6
+            ],
+            dtype=np.float32,
+        )
+        if minor_levels.size == 0:
+            minor_levels = None
+    else:
+        minor_levels = None
+
+    dpi = 100
+    fig = plt.figure(figsize=(max(2, width) / dpi, max(2, height) / dpi), dpi=dpi, frameon=False)
+    fig.patch.set_facecolor(BASEMAP_OCEAN_COLOR)
+    ax = fig.add_axes([0.02, 0.02, 0.82, 0.96], projection='polar')
+    ax.set_facecolor(BASEMAP_OCEAN_COLOR)
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    ax.set_ylim(0.0, r_edge)
+
+    ax.pcolormesh(
+        theta_grid,
+        r_grid,
+        anomaly_closed,
+        cmap=cmap,
+        norm=level_norm,
+        shading='nearest',
+        antialiased=False,
+        zorder=1,
+    )
+
+    pole_cap_val = np.nan
+    pole_cap_mask = lat >= float(center_cap_lat)
+    if np.any(pole_cap_mask):
+        pole_cap_val = float(np.nanmean(anomaly_sorted[pole_cap_mask, :]))
+    if not math.isfinite(pole_cap_val):
+        pole_cap_val = 0.0
+    pole_cap_r = float(_stereo_r(center_cap_lat))
+    if math.isfinite(pole_cap_r) and pole_cap_r > 0.0 and pole_cap_r < r_edge:
+        theta_cap = np.linspace(0.0, 2.0 * math.pi, 721, dtype=np.float64)
+        pole_color = cmap(level_norm([pole_cap_val])[0])
+        ax.fill_between(theta_cap, 0.0, pole_cap_r, color=pole_color, linewidth=0.0, zorder=2)
+
+    if minor_levels is not None:
+        ax.contour(
+            theta_grid,
+            r_grid,
+            contour_closed,
+            levels=minor_levels,
+            colors=minor_color,
+            linewidths=minor_lw,
+            alpha=minor_alpha,
+            zorder=3,
+        )
+    if major_levels is not None:
+        ax.contour(
+            theta_grid,
+            r_grid,
+            contour_closed,
+            levels=major_levels,
+            colors=major_color,
+            linewidths=major_lw,
+            alpha=major_alpha,
+            zorder=4,
+        )
+
+    ax.set_xticks(np.deg2rad(np.arange(0, 360, 30, dtype=np.float32)))
+    ring_lats = np.arange(20, 90, 10, dtype=np.float32)
+    ring_ticks = _stereo_r(ring_lats)
+    ring_ticks = ring_ticks[np.isfinite(ring_ticks)]
+    ring_ticks = ring_ticks[(ring_ticks > 0.0) & (ring_ticks < r_edge)]
+    if ring_ticks.size:
+        ax.set_yticks(np.sort(ring_ticks))
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.grid(True, linestyle='--', linewidth=0.75, color=grid_color, alpha=grid_alpha)
+    ax.spines['polar'].set_color('#303030')
+    ax.spines['polar'].set_linewidth(1.2)
+
+    cax = fig.add_axes([0.87, 0.15, 0.03, 0.70])
+    cbar = fig.colorbar(
+        ScalarMappable(norm=level_norm, cmap=cmap),
+        cax=cax,
+        orientation='vertical',
+        extend='both',
+        boundaries=anom_levels,
+    )
+    tick_vals = np.arange(float(vmin), float(vmax) + 1.0, float(anomaly_step) * 2.0)
+    cbar.set_ticks(tick_vals)
+    cbar.ax.tick_params(labelsize=9, length=2, width=0.8, colors='#202020')
+    cbar.outline.set_linewidth(0.8)
+    cbar.outline.set_edgecolor('#4a4a4a')
+    cbar.set_label('500-hPa Height Anomaly (m)', fontsize=9, color='#202020', labelpad=8)
+
+    fig.savefig(
+        out_file,
+        format='jpg',
+        dpi=dpi,
+        bbox_inches='tight',
+        pad_inches=0,
+        pil_kwargs={'quality': 97, 'subsampling': 0},
+    )
+    plt.close(fig)
+
+
 def _overlay_png_on_jpg(base_jpg, overlay_png):
     from PIL import Image
 
@@ -2031,7 +2265,6 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
         if product_key in ('conus_mslp_ptype', 'ne_mslp_ptype'):
             legend_h = 180
         elif product_key in (
-            'nh_z500a',
             'na_z500a',
             'conus_vort500',
             'conus_t2m',
@@ -2361,13 +2594,14 @@ def export_composite(composite, out_file, region, dimensions=1600, scale=None, c
 
 def _generate_z500_anomaly_map_local(img, h, region, prefix):
     if prefix == 'nh_z500a':
-        map_dims = NH_SOURCE_DIMS
+        polar_width = max(int(round(NH_POLAR_DIMS * 1.18)), NH_POLAR_DIMS + 120)
+        map_dims = f'{polar_width}x{NH_POLAR_DIMS}'
         sample_bounds = NH_SOURCE_REGION
         plans = [
-            {'dims': map_dims, 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[0], 'minor_interval': 6, 'major_interval': 12, 'include_z540': True, 'include_border': True, 'label': 'local base'},
-            {'dims': shrink_dimensions(map_dims), 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[1], 'minor_interval': 0, 'major_interval': 18, 'include_z540': True, 'include_border': True, 'label': 'local coarse'},
-            {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[2], 'minor_interval': 0, 'major_interval': 24, 'include_z540': False, 'include_border': True, 'label': 'local extra coarse'},
-            {'dims': shrink_dimensions(shrink_dimensions(map_dims)), 'sample_scale_m': int(LOCAL_Z500_NH_SCALES_M[2] * 1.7), 'minor_interval': 0, 'major_interval': 30, 'include_z540': False, 'include_border': False, 'label': 'local emergency'},
+            {'dims': map_dims, 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[0], 'label': 'local base'},
+            {'dims': map_dims, 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[1], 'label': 'local coarse'},
+            {'dims': map_dims, 'sample_scale_m': LOCAL_Z500_NH_SCALES_M[2], 'label': 'local extra coarse'},
+            {'dims': map_dims, 'sample_scale_m': int(LOCAL_Z500_NH_SCALES_M[2] * 1.7), 'label': 'local emergency'},
         ]
     else:
         map_dims = region_dimensions(ANOMALY_DIMS, region)
@@ -2386,11 +2620,13 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
 
     if is_long_range_hour(h):
         for plan in plans:
-            plan['dims'] = adaptive_dimensions_for_hour(plan['dims'], h, long_factor=0.92, min_w=760, min_h=300)
+            if prefix != 'nh_z500a':
+                plan['dims'] = adaptive_dimensions_for_hour(plan['dims'], h, long_factor=0.92, min_w=760, min_h=300)
             plan['sample_scale_m'] = int(plan['sample_scale_m'] * 1.2)
-            if plan.get('minor_interval', 0) > 0:
-                plan['minor_interval'] = max(12, int(plan['minor_interval']))
-            plan['major_interval'] = max(18, int(plan['major_interval']))
+            if prefix != 'nh_z500a':
+                if plan.get('minor_interval', 0) > 0:
+                    plan['minor_interval'] = max(12, int(plan['minor_interval']))
+                plan['major_interval'] = max(18, int(plan['major_interval']))
 
     out_file = build_frame_path(prefix, h)
     valid_utc = RUN_INIT_UTC + timedelta(hours=int(h))
@@ -2443,26 +2679,51 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
             anomaly_m_arr = forecast_m_arr - climo_m_arr
             contour_dam_arr = forecast_m_arr / 10.0
 
-            _render_local_anomaly_tile(
-                anomaly_field=anomaly_m_arr,
-                contour_field=contour_dam_arr,
-                bounds=sample_bounds,
-                out_file=out_file,
-                width=width,
-                height=height,
-                palette=ANOMALY_PALETTE,
-                vmin=ANOMALY_MIN_M,
-                vmax=ANOMALY_MAX_M,
-                minor_interval=plan['minor_interval'],
-                major_interval=plan['major_interval'],
-                minor_color='#2a2a2a',
-                major_color='#141414',
-                major_lw=1.0,
-                highlight_level=(540 if plan['include_z540'] else None),
-                highlight_color='#2455ff',
-            )
+            if prefix == 'nh_z500a':
+                _render_local_anomaly_polar(
+                    anomaly_field=anomaly_m_arr,
+                    contour_field=contour_dam_arr,
+                    bounds=sample_bounds,
+                    out_file=out_file,
+                    width=width,
+                    height=height,
+                    palette=ANOMALY_PALETTE,
+                    vmin=NH_Z500_POLAR_ANOM_MIN_M,
+                    vmax=NH_Z500_POLAR_ANOM_MAX_M,
+                    anomaly_step=NH_Z500_POLAR_ANOM_STEP_M,
+                    minor_interval=NH_Z500_POLAR_MINOR_INTERVAL,
+                    major_interval=NH_Z500_POLAR_MAJOR_INTERVAL,
+                    minor_color='#363636',
+                    major_color='#080808',
+                    minor_lw=0.56,
+                    major_lw=1.0,
+                    minor_alpha=0.62,
+                    major_alpha=0.95,
+                    grid_color='#b8b8b8',
+                    grid_alpha=0.40,
+                    lon0=NH_LON0,
+                )
+            else:
+                _render_local_anomaly_tile(
+                    anomaly_field=anomaly_m_arr,
+                    contour_field=contour_dam_arr,
+                    bounds=sample_bounds,
+                    out_file=out_file,
+                    width=width,
+                    height=height,
+                    palette=ANOMALY_PALETTE,
+                    vmin=ANOMALY_MIN_M,
+                    vmax=ANOMALY_MAX_M,
+                    minor_interval=plan['minor_interval'],
+                    major_interval=plan['major_interval'],
+                    minor_color='#2a2a2a',
+                    major_color='#141414',
+                    major_lw=1.0,
+                    highlight_level=(540 if plan['include_z540'] else None),
+                    highlight_color='#2455ff',
+                )
 
-            if plan.get('include_border', True):
+            if prefix != 'nh_z500a' and plan.get('include_border', True):
                 border_png = get_cached_border_overlay_png(
                     sample_bounds,
                     width,
@@ -2472,8 +2733,6 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
                 )
                 _overlay_png_on_jpg(out_file, border_png)
 
-            if prefix == 'nh_z500a':
-                remap_nh_to_polar(out_file, lon0=NH_LON0)
             annotate_map_file(out_file, prefix, h)
             return
         except Exception as e:
@@ -2491,6 +2750,8 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
 
 
 def generate_z500_anomaly_map(img, h, region, prefix):
+    if prefix == 'nh_z500a':
+        return _generate_z500_anomaly_map_local(img, h, NH_SOURCE_REGION, prefix)
     if LOCAL_TRUE_ANOMALY_RENDER:
         return _generate_z500_anomaly_map_local(img, h, region, prefix)
 
@@ -2721,8 +2982,6 @@ def generate_z500_anomaly_map(img, h, region, prefix):
                 )
 
             stitch_horizontal_many(tile_tmp_files, out_file)
-            if prefix == 'nh_z500a':
-                remap_nh_to_polar(out_file, lon0=NH_LON0)
             annotate_map_file(out_file, prefix, h)
             return
         except Exception as e:
