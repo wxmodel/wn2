@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-03-02T02:23:21Z",
+  "generated_utc": "2026-03-02T03:05:44Z",
   "history_hours": 24,
   "default_run_id": "2026022818",
   "snow_products": [
@@ -101,9 +101,9 @@
       "missing_products": [],
       "failed_products": [],
       "failure_messages": {},
-      "successful_exports": 10,
+      "successful_exports": 0,
       "failed_exports": 0,
-      "updated_utc": "2026-03-02T02:23:21Z"
+      "updated_utc": "2026-03-02T03:05:44Z"
     },
     {
       "id": "2026030112",
