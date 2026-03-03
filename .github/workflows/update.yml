@@ -75,6 +75,14 @@ on:
         required: false
         default: "2020"
         type: string
+      climo_source:
+        description: "Climatology source reanalysis (era5 uses ERA5 for T2M; H500 falls back to MERRA2 in EE)"
+        required: false
+        default: "era5"
+        type: choice
+        options:
+          - era5
+          - merra2
       export_workers:
         description: "Parallel worker count for non-z500 products (1-4)"
         required: false
@@ -166,6 +174,7 @@ jobs:
           WN2_GEOGRAPHY_DETAIL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.geography_detail || 'auto' }}
           WN2_CLIMO_START_YEAR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_start_year || '' }}
           WN2_CLIMO_END_YEAR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_end_year || '' }}
+          WN2_CLIMO_SOURCE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_source || 'era5' }}
           EXPORT_WORKERS: ${{ matrix.phase == 'core' && (github.event_name == 'workflow_dispatch' && github.event.inputs.export_workers || '2') || '1' }}
           WN2_PRODUCT_MODE: custom
           WN2_NH_RENDER_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.nh_render_mode || 'legacy' }}
@@ -275,6 +284,7 @@ jobs:
           WN2_GEOGRAPHY_DETAIL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.geography_detail || 'auto' }}
           WN2_CLIMO_START_YEAR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_start_year || '' }}
           WN2_CLIMO_END_YEAR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_end_year || '' }}
+          WN2_CLIMO_SOURCE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.climo_source || 'era5' }}
           EXPORT_WORKERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.export_workers || '2' }}
           WN2_PRODUCT_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode || 'all' }}
           WN2_NH_RENDER_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.nh_render_mode || 'legacy' }}

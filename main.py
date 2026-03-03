@@ -38,8 +38,12 @@ WN2_PRECIP_6H_BAND = 'total_precipitation_6hr'
 WN2_T2M_BAND = '2m_temperature'
 WN2_T850_BAND = '850_temperature'
 WN2_T700_BAND = '700_temperature'
-CLIMO_ASSET = 'NASA/GSFC/MERRA/slv/2'
-CLIMO_H500_BAND = 'H500'
+MERRA2_CLIMO_ASSET = 'NASA/GSFC/MERRA/slv/2'
+MERRA2_CLIMO_H500_BAND = 'H500'
+MERRA2_CLIMO_T2M_BAND = 'T2M'
+ERA5_HOURLY_CLIMO_ASSET = 'ECMWF/ERA5/HOURLY'
+ERA5_DAILY_CLIMO_ASSET = 'ECMWF/ERA5/DAILY'
+ERA5_DAILY_CLIMO_T2M_BAND = 'mean_2m_air_temperature'
 CLIMO_START_YEAR = 1991
 CLIMO_END_YEAR = 2020
 CLIMO_DOY_WINDOW_DAYS = 0
@@ -219,6 +223,7 @@ min_valid_frame_bytes_env = os.environ.get('WN2_MIN_VALID_FRAME_BYTES')
 climo_window_days_env = os.environ.get('WN2_CLIMO_DOY_WINDOW_DAYS')
 climo_start_year_env = os.environ.get('WN2_CLIMO_START_YEAR')
 climo_end_year_env = os.environ.get('WN2_CLIMO_END_YEAR')
+climo_source_env = os.environ.get('WN2_CLIMO_SOURCE')
 short_range_accuracy_hours_env = os.environ.get('WN2_SHORT_RANGE_ACCURACY_HOURS')
 run_nh_z500a_env = os.environ.get('WN2_RUN_NH_Z500A')
 run_na_z500a_env = os.environ.get('WN2_RUN_NA_Z500A')
@@ -263,9 +268,13 @@ SKIP_CLEANUP_RUN_DIR = _env_flag(skip_cleanup_run_dir_env, default=RESUME_EXISTI
 ALLOW_NO_PRODUCTS = _env_flag(allow_no_products_env, default=False)
 ADAPTIVE_LONG_RANGE = _env_flag(adaptive_long_range_env, default=True)
 NH_RENDER_MODE = str(nh_render_mode_env or 'legacy').strip().lower()
+CLIMO_SOURCE = str(climo_source_env or 'era5').strip().lower()
 if NH_RENDER_MODE not in ('legacy', 'polar'):
     print(f'[{ts()}] Invalid WN2_NH_RENDER_MODE="{NH_RENDER_MODE}", defaulting to legacy.')
     NH_RENDER_MODE = 'legacy'
+if CLIMO_SOURCE not in ('era5', 'merra2'):
+    print(f'[{ts()}] Invalid WN2_CLIMO_SOURCE="{CLIMO_SOURCE}", defaulting to era5.')
+    CLIMO_SOURCE = 'era5'
 USE_NH_TRUE_POLAR_RENDER = (NH_RENDER_MODE == 'polar')
 
 FAST_RENDER = _env_flag(fast_render_env, default=(event_name == 'schedule'))
@@ -470,15 +479,35 @@ T2M_F_MIN = -20.0
 T2M_F_MAX = 110.0
 T2M_ANOM_F_MIN = -40.0
 T2M_ANOM_F_MAX = 40.0
-CLIMO_H500_COLLECTION = (
-    ee.ImageCollection(CLIMO_ASSET)
-    .select(CLIMO_H500_BAND)
-)
+if CLIMO_SOURCE == 'era5':
+    # ERA5 daily is used for T2M climatology. Earth Engine ERA5 does not expose
+    # a 500-hPa geopotential-height band, so H500 remains on MERRA2 for now.
+    CLIMO_H500_COLLECTION = ee.ImageCollection(MERRA2_CLIMO_ASSET).select(MERRA2_CLIMO_H500_BAND)
+    CLIMO_H500_BAND = MERRA2_CLIMO_H500_BAND
+    CLIMO_H500_SOURCE_LABEL = 'MERRA2'
+    CLIMO_T2M_COLLECTION = ee.ImageCollection(ERA5_DAILY_CLIMO_ASSET).select(ERA5_DAILY_CLIMO_T2M_BAND)
+    CLIMO_T2M_BAND = ERA5_DAILY_CLIMO_T2M_BAND
+    CLIMO_T2M_SOURCE_LABEL = 'ERA5'
+    CLIMO_T2M_USE_HOUR_FILTER = False
+    CLIMO_SOURCE_NOTE = (
+        'ERA5 selected; T2M uses ERA5 daily means, and H500 falls back to MERRA2 '
+        'because ERA5 H500 geopotential is unavailable in EE.'
+    )
+else:
+    CLIMO_H500_COLLECTION = ee.ImageCollection(MERRA2_CLIMO_ASSET).select(MERRA2_CLIMO_H500_BAND)
+    CLIMO_H500_BAND = MERRA2_CLIMO_H500_BAND
+    CLIMO_H500_SOURCE_LABEL = 'MERRA2'
+    CLIMO_T2M_COLLECTION = ee.ImageCollection(MERRA2_CLIMO_ASSET).select(MERRA2_CLIMO_T2M_BAND)
+    CLIMO_T2M_BAND = MERRA2_CLIMO_T2M_BAND
+    CLIMO_T2M_SOURCE_LABEL = 'MERRA2'
+    CLIMO_T2M_USE_HOUR_FILTER = True
+    CLIMO_SOURCE_NOTE = 'MERRA2 selected for both H500 and T2M.'
+
+CLIMO_H500_BASELINE_LABEL = f'{CLIMO_H500_SOURCE_LABEL} {CLIMO_START_YEAR}-{CLIMO_END_YEAR}'
+CLIMO_T2M_BASELINE_LABEL = f'{CLIMO_T2M_SOURCE_LABEL} {CLIMO_START_YEAR}-{CLIMO_END_YEAR}'
+CLIMO_H500_GROUP_YEARS = 3
+CLIMO_T2M_GROUP_YEARS = 1 if CLIMO_T2M_SOURCE_LABEL == 'ERA5' else 3
 CLIMO_H500_CACHE = {}
-CLIMO_T2M_COLLECTION = (
-    ee.ImageCollection(CLIMO_ASSET)
-    .select('T2M')
-)
 CLIMO_T2M_CACHE = {}
 CLIMO_SIZE_LOGGED = set()
 CLIMO_COUNT_CACHE = {}
@@ -790,7 +819,7 @@ else:
     MIN_VALID_FRAME_BYTES = max(4000, min_valid_frame_bytes_raw)
 climo_window_days_raw = _parse_int(climo_window_days_env)
 if climo_window_days_raw is None:
-    CLIMO_DOY_WINDOW_DAYS = 5
+    CLIMO_DOY_WINDOW_DAYS = 0 if CLIMO_SOURCE == 'era5' else 5
 else:
     CLIMO_DOY_WINDOW_DAYS = max(0, min(15, climo_window_days_raw))
 climo_start_year_raw = _parse_int(climo_start_year_env)
@@ -804,6 +833,8 @@ if climo_start_year_raw is not None or climo_end_year_raw is not None:
         parsed_end = parsed_start
     CLIMO_START_YEAR = parsed_start
     CLIMO_END_YEAR = parsed_end
+CLIMO_H500_BASELINE_LABEL = f'{CLIMO_H500_SOURCE_LABEL} {CLIMO_START_YEAR}-{CLIMO_END_YEAR}'
+CLIMO_T2M_BASELINE_LABEL = f'{CLIMO_T2M_SOURCE_LABEL} {CLIMO_START_YEAR}-{CLIMO_END_YEAR}'
 short_range_accuracy_hours_raw = _parse_int(short_range_accuracy_hours_env)
 if short_range_accuracy_hours_raw is None:
     SHORT_RANGE_ACCURACY_HOURS = 24
@@ -824,9 +855,11 @@ print(
     f'(min_valid_bytes={MIN_VALID_FRAME_BYTES}, skip_cleanup={SKIP_CLEANUP_RUN_DIR})'
 )
 print(
-    f'[{ts()}] Climatology baseline: MERRA2 {CLIMO_START_YEAR}-{CLIMO_END_YEAR} '
+    f'[{ts()}] Climatology baseline: '
+    f'H500={CLIMO_H500_BASELINE_LABEL}, T2M={CLIMO_T2M_BASELINE_LABEL} '
     f'(day-window=+/-{CLIMO_DOY_WINDOW_DAYS}d, not model-climate).'
 )
+print(f'[{ts()}] Climatology source mode: {CLIMO_SOURCE} ({CLIMO_SOURCE_NOTE})')
 if SHORT_RANGE_ACCURACY_HOURS > 0:
     print(f'[{ts()}] Short-range anomaly fidelity boost enabled through hour {SHORT_RANGE_ACCURACY_HOURS}.')
 if ADAPTIVE_LONG_RANGE:
@@ -1199,7 +1232,10 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analy
     base_collection = CLIMO_T2M_COLLECTION.filter(
         ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year')
     )
-    hour_collection = base_collection.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    if CLIMO_T2M_USE_HOUR_FILTER:
+        hour_collection = base_collection.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    else:
+        hour_collection = base_collection
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     if CLIMO_DOY_WINDOW_DAYS <= 0:
         window_collection = hour_collection.filter(
@@ -1211,27 +1247,34 @@ def t2m_climo_1991_2020_c(valid_utc, region_geom=None, cache_tag='global', analy
         start_doy = doy - CLIMO_DOY_WINDOW_DAYS
         end_doy = doy + CLIMO_DOY_WINDOW_DAYS
         window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
-    fallback_collection = base_collection.filter(
-        ee.Filter.calendarRange(month, month, 'month')
-    ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    fallback_collection = base_collection.filter(ee.Filter.calendarRange(month, month, 'month'))
+    if CLIMO_T2M_USE_HOUR_FILTER:
+        fallback_collection = fallback_collection.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
-    count_key = ('t2m', CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
+    hour_key = hour if CLIMO_T2M_USE_HOUR_FILTER else -1
+    count_key = ('t2m', CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour_key)
     window_n = CLIMO_COUNT_CACHE.get(count_key)
     if window_n is None:
         window_n = int(window_collection.size().getInfo())
         CLIMO_COUNT_CACHE[count_key] = window_n
-    size_log_key = ('t2m', CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
+    size_log_key = ('t2m', CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour_key)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
             fallback_n = int(fallback_collection.size().getInfo())
-            print(f'[{ts()}] T2M climo sample count month/day/hour={window_n}, fallback month/hour={fallback_n}.')
+            if CLIMO_T2M_USE_HOUR_FILTER:
+                print(f'[{ts()}] T2M climo sample count month/day/hour={window_n}, fallback month/hour={fallback_n}.')
+            else:
+                print(f'[{ts()}] T2M climo sample count month/day={window_n}, fallback month={fallback_n}.')
         except Exception as e:
             print(f'[{ts()}] T2M climo sample-count check skipped: {e}')
         CLIMO_SIZE_LOGGED.add(size_log_key)
     climo_source = window_collection if window_n > 0 else fallback_collection
     climo_k = ee.Image(climo_source.mean()).rename('t2m_climo_k').resample('bilinear')
     if analysis_scale_m is not None:
-        climo_k = _coarsen_for_compute(climo_k, analysis_scale_m, min_scale_m=15000)
+        if CLIMO_T2M_SOURCE_LABEL == 'ERA5':
+            climo_k = climo_k.reproject(crs=TARGET_CRS, scale=max(30000, int(analysis_scale_m)))
+        else:
+            climo_k = _coarsen_for_compute(climo_k, analysis_scale_m, min_scale_m=15000)
     climo_c = climo_k.subtract(273.15).rename('t2m_climo_c')
     if region_geom is not None:
         climo_c = climo_c.clip(region_geom)
@@ -1252,8 +1295,13 @@ def t2m_anomaly_c(img, hour, region_geom=None, cache_tag='global', analysis_scal
         forecast_t2m_c = forecast_t2m_c.clip(region_geom)
         climo_t2m_c = climo_t2m_c.clip(region_geom)
     if analysis_scale_m is not None:
-        forecast_t2m_c = _coarsen_for_compute(forecast_t2m_c, analysis_scale_m, min_scale_m=15000)
-        climo_t2m_c = _coarsen_for_compute(climo_t2m_c, analysis_scale_m, min_scale_m=15000)
+        if CLIMO_T2M_SOURCE_LABEL == 'ERA5':
+            coarse_scale = max(30000, int(analysis_scale_m))
+            forecast_t2m_c = forecast_t2m_c.resample('bilinear').reproject(crs=TARGET_CRS, scale=coarse_scale)
+            climo_t2m_c = climo_t2m_c.resample('bilinear').reproject(crs=TARGET_CRS, scale=coarse_scale)
+        else:
+            forecast_t2m_c = _coarsen_for_compute(forecast_t2m_c, analysis_scale_m, min_scale_m=15000)
+            climo_t2m_c = _coarsen_for_compute(climo_t2m_c, analysis_scale_m, min_scale_m=15000)
     else:
         forecast_t2m_c = forecast_t2m_c.toFloat()
         climo_t2m_c = climo_t2m_c.toFloat()
@@ -1453,9 +1501,9 @@ def _sample_rect_array(field_img, band_name, bounds, base_scale_m, max_attempts=
                 ee.Image(field_img)
                 .select(band_name)
                 .toFloat()
+                .clip(geom)
                 .resample('bilinear')
                 .reproject(crs=TARGET_CRS, scale=current_scale)
-                .clip(geom)
             )
             info = sampled.sampleRectangle(region=geom, defaultValue=fill_value).getInfo()
             raw = (info or {}).get('properties', {}).get(band_name)
@@ -1491,7 +1539,13 @@ def _sample_rect_array(field_img, band_name, bounds, base_scale_m, max_attempts=
     )
 
 
-def _select_climo_source_collection(base_collection, valid_utc, region_geom, count_cache_prefix):
+def _select_climo_source_collection(
+    base_collection,
+    valid_utc,
+    region_geom,
+    count_cache_prefix,
+    use_hour_filter=True,
+):
     month = int(valid_utc.month)
     day = int(valid_utc.day)
     hour = int(valid_utc.hour)
@@ -1500,7 +1554,10 @@ def _select_climo_source_collection(base_collection, valid_utc, region_geom, cou
     year_filtered = base_collection.filter(
         ee.Filter.calendarRange(CLIMO_START_YEAR, CLIMO_END_YEAR, 'year')
     )
-    hour_collection = year_filtered.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    if use_hour_filter:
+        hour_collection = year_filtered.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    else:
+        hour_collection = year_filtered
     hour_collection = _clip_collection_to_region(hour_collection, region_geom)
     if CLIMO_DOY_WINDOW_DAYS <= 0:
         window_collection = hour_collection.filter(
@@ -1513,23 +1570,26 @@ def _select_climo_source_collection(base_collection, valid_utc, region_geom, cou
         end_doy = doy + CLIMO_DOY_WINDOW_DAYS
         window_collection = hour_collection.filter(_wrap_day_of_year_filter(start_doy, end_doy))
 
-    fallback_collection = year_filtered.filter(
-        ee.Filter.calendarRange(month, month, 'month')
-    ).filter(ee.Filter.calendarRange(hour, hour, 'hour'))
+    fallback_collection = year_filtered.filter(ee.Filter.calendarRange(month, month, 'month'))
+    if use_hour_filter:
+        fallback_collection = fallback_collection.filter(ee.Filter.calendarRange(hour, hour, 'hour'))
     fallback_collection = _clip_collection_to_region(fallback_collection, region_geom)
 
-    count_key = (count_cache_prefix, CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
+    hour_key = hour if use_hour_filter else -1
+    count_key = (count_cache_prefix, CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour_key)
     window_n = CLIMO_COUNT_CACHE.get(count_key)
     if window_n is None:
         window_n = int(window_collection.size().getInfo())
         CLIMO_COUNT_CACHE[count_key] = window_n
-    size_log_key = (count_cache_prefix, CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour)
+    size_log_key = (count_cache_prefix, CLIMO_START_YEAR, CLIMO_END_YEAR, month, day, hour_key)
     if size_log_key not in CLIMO_SIZE_LOGGED:
         try:
             fallback_n = int(fallback_collection.size().getInfo())
+            sample_label = 'month/day/hour' if use_hour_filter else 'month/day'
+            fallback_label = 'month/hour' if use_hour_filter else 'month'
             print(
                 f'[{ts()}] {count_cache_prefix.upper()} climo sample count '
-                f'month/day/hour={window_n}, fallback month/hour={fallback_n}.'
+                f'{sample_label}={window_n}, fallback {fallback_label}={fallback_n}.'
             )
         except Exception as e:
             print(f'[{ts()}] {count_cache_prefix.upper()} climo sample-count check skipped: {e}')
@@ -2153,7 +2213,12 @@ def _draw_legend(draw, product_key, width, y, snow_ratio=10):
 
     if product_key in ('nh_z500a', 'na_z500a'):
         _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
-        draw.text((bar_x, y + 2), '500-hPa Height Anomaly (m, 1991-2020 normal)', fill=(22, 22, 22), font=label_font)
+        draw.text(
+            (bar_x, y + 2),
+            f'500-hPa Height Anomaly (m, {CLIMO_H500_BASELINE_LABEL} normal)',
+            fill=(22, 22, 22),
+            font=label_font,
+        )
         _draw_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, ANOMALY_PALETTE)
         _draw_ticks(
             draw,
@@ -2184,7 +2249,12 @@ def _draw_legend(draw, product_key, width, y, snow_ratio=10):
 
     if product_key == 'conus_t2m_anom':
         _draw_panel(draw, bar_x - 14, y - 4, bar_x + bar_w + 14, y + 72)
-        draw.text((bar_x, y + 2), '2m Temperature Anomaly (degF) vs 1991-2020 | USA Region (CONUS)', fill=(22, 22, 22), font=label_font)
+        draw.text(
+            (bar_x, y + 2),
+            f'2m Temperature Anomaly (degF) vs {CLIMO_T2M_BASELINE_LABEL} | USA Region (CONUS)',
+            fill=(22, 22, 22),
+            font=label_font,
+        )
         _draw_gradient_bar(draw, bar_x, bar_y, bar_w, bar_h, T2M_ANOM_F_PALETTE)
         _draw_ticks(draw, bar_x, bar_y, bar_w, bar_h, [-40, -30, -20, -10, 0, 10, 20, 30, 40], T2M_ANOM_F_MIN, T2M_ANOM_F_MAX, tick_font)
         return
@@ -2270,13 +2340,13 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
     from PIL import Image, ImageDraw
 
     product_titles = {
-        'nh_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly vs 1991-2020 (m) | Northern Hemisphere',
-        'na_z500a': 'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly vs 1991-2020 (m) | North America',
+        'nh_z500a': f'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly vs {CLIMO_H500_BASELINE_LABEL} (m) | Northern Hemisphere',
+        'na_z500a': f'WN2 0.25 deg | 500-hPa Geopotential Height (dam) & Anomaly vs {CLIMO_H500_BASELINE_LABEL} (m) | North America',
         'conus_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | CONUS',
         'ne_mslp_ptype': 'WN2 0.25 deg | MSLP (hPa) + Precip Type | Northeast',
         'conus_vort500': 'WN2 0.25 deg | 500-hPa Relative Vorticity + 500-hPa Height (dam) | CONUS',
         'conus_t2m': 'WN2 0.25 deg | 2m Temperature (degF) | USA Region (CONUS)',
-        'conus_t2m_anom': 'WN2 0.25 deg | 2m Temperature Anomaly (degF) vs 1991-2020 | USA Region (CONUS)',
+        'conus_t2m_anom': f'WN2 0.25 deg | 2m Temperature Anomaly (degF) vs {CLIMO_T2M_BASELINE_LABEL} | USA Region (CONUS)',
         'conus_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | CONUS',
         'ne_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | Northeast',
         'ne_zoom_snow_accum': f'WN2 0.25 deg | Accumulated Snowfall (in, {int(snow_ratio)}:1) | New England Zoom',
@@ -2754,7 +2824,7 @@ def _generate_z500_anomaly_map_local(img, h, region, prefix):
                     CLIMO_H500_BAND,
                     sample_bounds,
                     used_scale,
-                    group_years=3,
+                    group_years=CLIMO_H500_GROUP_YEARS,
                     context=f'{prefix} climo_h500_m',
                 )
                 LOCAL_CLIMO_ARRAY_CACHE[climo_cache_key] = climo_m_arr
@@ -3474,13 +3544,14 @@ def _generate_conus_t2m_anomaly_map_local(img, h, region=CONUS_THUMB_REGION, key
                     valid_utc,
                     sample_geom,
                     't2m',
+                    use_hour_filter=CLIMO_T2M_USE_HOUR_FILTER,
                 )
                 climo_k_arr, _ = _sample_grouped_climo_array(
                     climo_source,
-                    'T2M',
+                    CLIMO_T2M_BAND,
                     region,
                     used_scale,
-                    group_years=3,
+                    group_years=CLIMO_T2M_GROUP_YEARS,
                     context=f'{key} climo_t2m_c',
                 )
                 climo_c_arr = climo_k_arr - 273.15
@@ -3536,10 +3607,19 @@ def _generate_conus_t2m_anomaly_map_local(img, h, region=CONUS_THUMB_REGION, key
 
 
 def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus_t2m_anom'):
-    if LOCAL_TRUE_ANOMALY_RENDER:
+    if LOCAL_TRUE_ANOMALY_RENDER and CLIMO_T2M_SOURCE_LABEL != 'ERA5':
         return _generate_conus_t2m_anomaly_map_local(img, h, region=region, key=key)
+    if LOCAL_TRUE_ANOMALY_RENDER and CLIMO_T2M_SOURCE_LABEL == 'ERA5':
+        notice_flag = getattr(generate_conus_t2m_anomaly_map, '_era5_local_notice', False)
+        if not notice_flag:
+            print(
+                f'[{ts()}] ERA5 T2M climatology detected: using EE-native anomaly render '
+                f'for {key} (local sampled-array mode is disabled for ERA5 stability).'
+            )
+            setattr(generate_conus_t2m_anomaly_map, '_era5_local_notice', True)
 
-    tile_bounds = split_region_longitude(region, parts=4)
+    tile_parts = 1 if CLIMO_T2M_SOURCE_LABEL == 'ERA5' else 4
+    tile_bounds = split_region_longitude(region, parts=tile_parts)
     base_dims = region_dimensions(CONUS_DIMS, region)
     mid_dims = shrink_dimensions(base_dims)
     low_dims = shrink_dimensions(mid_dims)
@@ -3614,6 +3694,11 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
     for plan in plans:
         tile_tmp_files = [f'{out_file}.tile{idx}.jpg' for idx in range(len(tile_bounds))]
         split_dims = split_dimensions_horizontal_parts(plan['dims'], parts=len(tile_bounds))
+        if CLIMO_T2M_SOURCE_LABEL == 'ERA5':
+            # Keep ERA5 fallback outputs above sanity thresholds when exported as narrow tile slices.
+            sw, sh = parse_dimensions(split_dims, fallback_w=260, fallback_h=380)
+            split_dims = f'{max(260, sw)}x{max(360, sh)}'
+        export_scale = None if CLIMO_T2M_SOURCE_LABEL == 'ERA5' else plan['scale_m']
         try:
             for idx, bounds in enumerate(tile_bounds):
                 tile_geom = ee.Geometry.Rectangle(bounds, geodesic=False)
@@ -3646,7 +3731,7 @@ def generate_conus_t2m_anomaly_map(img, h, region=CONUS_THUMB_REGION, key='conus
                     tile_tmp_files[idx],
                     bounds,
                     dimensions=split_dims,
-                    scale=plan['scale_m'],
+                    scale=export_scale,
                     crs=TARGET_CRS,
                 )
 
