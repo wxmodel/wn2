@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-03-03T02:00:48Z",
+  "generated_utc": "2026-03-03T11:42:54Z",
   "history_hours": 24,
   "default_run_id": "2026030212",
   "snow_products": [
@@ -495,91 +495,6 @@
       "successful_exports": 72,
       "failed_exports": 0,
       "updated_utc": "2026-03-02T15:06:01Z"
-    },
-    {
-      "id": "2026030200",
-      "label": "2026-03-02 00Z",
-      "run_date": "202603020000_202603020600_0",
-      "init_utc": "2026-03-02T00:00:00Z",
-      "hours": [
-        6
-      ],
-      "products": [
-        "nh_z500a",
-        "na_z500a",
-        "conus_mslp_ptype",
-        "ne_mslp_ptype",
-        "conus_vort500",
-        "conus_t2m",
-        "conus_t2m_anom",
-        "conus_snow_accum",
-        "ne_snow_accum",
-        "ne_zoom_snow_accum"
-      ],
-      "snow_ratios": [
-        10
-      ],
-      "product_hours": {
-        "nh_z500a": [
-          6
-        ],
-        "na_z500a": [
-          6
-        ],
-        "conus_mslp_ptype": [
-          6
-        ],
-        "ne_mslp_ptype": [
-          6
-        ],
-        "conus_vort500": [
-          6
-        ],
-        "conus_t2m": [
-          6
-        ],
-        "conus_t2m_anom": [
-          6
-        ],
-        "conus_snow_accum": [
-          6
-        ],
-        "ne_snow_accum": [
-          6
-        ],
-        "ne_zoom_snow_accum": [
-          6
-        ]
-      },
-      "product_snow_ratios": {
-        "conus_snow_accum": [
-          10
-        ],
-        "ne_snow_accum": [
-          10
-        ],
-        "ne_zoom_snow_accum": [
-          10
-        ]
-      },
-      "enabled_products": [
-        "nh_z500a",
-        "na_z500a",
-        "conus_mslp_ptype",
-        "ne_mslp_ptype",
-        "conus_vort500",
-        "conus_t2m",
-        "conus_t2m_anom",
-        "conus_snow_accum",
-        "ne_snow_accum",
-        "ne_zoom_snow_accum"
-      ],
-      "missing_products": [],
-      "failed_products": [],
-      "failure_messages": {},
-      "successful_exports": 10,
-      "failed_exports": 0,
-      "updated_utc": "2026-03-02T09:41:08Z"
     }
   ]
 }
