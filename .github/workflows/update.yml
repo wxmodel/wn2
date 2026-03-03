@@ -281,6 +281,7 @@ jobs:
           WN2_SELECTED_PRODUCTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.product_mode == 'custom' && github.event.inputs.custom_products_csv || '' }}
           WN2_RESUME_EXISTING: "1"
           WN2_SKIP_CLEANUP_RUN_DIR: "1"
+          WN2_RECONCILE_ONLY: "1"
           WN2_RUN_NH_Z500A: "1"
           WN2_RUN_NA_Z500A: "1"
           WN2_RUN_CONUS_MSLP_PTYPE: "1"

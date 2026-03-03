@@ -233,6 +233,7 @@ run_conus_t2m_anom_env = os.environ.get('WN2_RUN_CONUS_T2M_ANOM')
 selected_products_csv_env = os.environ.get('WN2_SELECTED_PRODUCTS')
 nh_render_mode_env = os.environ.get('WN2_NH_RENDER_MODE')
 local_true_anom_render_env = os.environ.get('WN2_LOCAL_TRUE_ANOM_RENDER')
+reconcile_only_env = os.environ.get('WN2_RECONCILE_ONLY')
 
 
 def _env_flag(raw, default=False):
@@ -256,6 +257,7 @@ def _parse_product_keys_csv(raw):
 
 
 LOCAL_TRUE_ANOMALY_RENDER = _env_flag(local_true_anom_render_env, default=True)
+RECONCILE_ONLY = _env_flag(reconcile_only_env, default=False)
 RESUME_EXISTING = _env_flag(resume_existing_env, default=True)
 SKIP_CLEANUP_RUN_DIR = _env_flag(skip_cleanup_run_dir_env, default=RESUME_EXISTING)
 ALLOW_NO_PRODUCTS = _env_flag(allow_no_products_env, default=False)
@@ -395,6 +397,8 @@ if max_dimension_px is not None:
     print(f'[{ts()}] Max output dimension cap: {max_dimension_px}px.')
 print(f'[{ts()}] NH render mode: {NH_RENDER_MODE}.')
 print(f'[{ts()}] Geography detail mode: {GEOGRAPHY_DETAIL_MODE}.')
+if RECONCILE_ONLY:
+    print(f'[{ts()}] Reconcile-only mode enabled: map rendering phases will be skipped.')
 
 ANOMALY_PALETTE = [
     '#6a1b9a', '#7e57c2', '#5c6bc0', '#3f7fcf', '#5ea5de', '#8cc3e8',
@@ -3748,7 +3752,8 @@ def sanity_check_jpgs(out_dir: str, pattern: str = "z500a_*.jpg", require_variat
 
 # --- 4. EXECUTION ---
 cleanup_old_products()
-if SKIP_CLEANUP_RUN_DIR:
+skip_cleanup_effective = SKIP_CLEANUP_RUN_DIR or RECONCILE_ONLY
+if skip_cleanup_effective:
     print(f'[{ts()}] Skipping run-directory cleanup to preserve existing frames for resume mode.')
 else:
     cleanup_current_run_products()
@@ -3889,7 +3894,7 @@ def write_step_summary(
         print(f'[{ts()}] Warning: could not write GitHub step summary: {e}')
 
 
-if 'nh_z500a' in enabled_keys:
+if not RECONCILE_ONLY and 'nh_z500a' in enabled_keys:
     print(f'[{ts()}] Phase 1/3: generating NH z500 true-anomaly maps first.')
     for h in HOURS:
         out_file = build_frame_path('nh_z500a', h)
@@ -3906,7 +3911,7 @@ if 'nh_z500a' in enabled_keys:
             _record_task_failure(h, 'nh_z500a', str(e), e)
 
 non_z500_enabled = [k for k in enabled_keys if k not in {'nh_z500a', 'na_z500a'}]
-if non_z500_enabled:
+if not RECONCILE_ONLY and non_z500_enabled:
     print(f'[{ts()}] Phase 2/3: generating non-z500 products.')
     for h in HOURS:
         task_specs = []
@@ -4039,7 +4044,7 @@ if non_z500_enabled:
                     err_msg = str(e)
                     _record_task_failure(h, name, err_msg, e)
 
-if 'na_z500a' in enabled_keys:
+if not RECONCILE_ONLY and 'na_z500a' in enabled_keys:
     print(f'[{ts()}] Phase 3/3: generating NA z500 true-anomaly maps last.')
     for h in HOURS:
         out_file = build_frame_path('na_z500a', h)
@@ -4054,6 +4059,9 @@ if 'na_z500a' in enabled_keys:
             successful_exports += 1
         except Exception as e:
             _record_task_failure(h, 'na_z500a', str(e), e)
+
+if RECONCILE_ONLY:
+    print(f'[{ts()}] Reconcile-only mode: skipped render phases and using existing run frames.')
 
 print(
     f'[{ts()}] Export counts: planned={planned_exports}, '
