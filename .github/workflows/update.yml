@@ -160,7 +160,6 @@ jobs:
 
       - name: Run Map Generator (Shard)
         id: map_generator
-        continue-on-error: true
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
           EE_PROJECT: ${{ secrets.EE_PROJECT }}
@@ -196,8 +195,13 @@ jobs:
           WN2_RUN_NE_ZOOM_SNOW_ACCUM: ${{ matrix.phase == 'core' && '1' || '' }}
         run: python main.py
 
+      - name: Smoke Test Outputs (Shard)
+        env:
+          WN2_MAX_DIMENSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.max_dimension || '900' }}
+        run: python tests/smoke_outputs.py
+
       - name: Report generator failure (shard)
-        if: ${{ steps.map_generator.outcome == 'failure' }}
+        if: ${{ failure() && steps.map_generator.outcome == 'failure' }}
         run: |
           echo "Shard generation failed; artifact upload will continue with partial outputs."
 
@@ -270,7 +274,6 @@ jobs:
 
       - name: Run Map Generator (Resume + Reconcile)
         id: map_generator_reconcile
-        continue-on-error: true
         env:
           EE_KEY: ${{ secrets.EE_KEY }}
           EE_PROJECT: ${{ secrets.EE_PROJECT }}
@@ -304,13 +307,30 @@ jobs:
           WN2_RUN_NE_ZOOM_SNOW_ACCUM: "1"
         run: python main.py
 
+      - name: Smoke Test Outputs (Reconcile)
+        env:
+          WN2_MAX_DIMENSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.max_dimension || '900' }}
+        run: python tests/smoke_outputs.py
+
       - name: Report generator failure (reconcile)
-        if: ${{ steps.map_generator_reconcile.outcome == 'failure' }}
+        if: ${{ failure() && steps.map_generator_reconcile.outcome == 'failure' }}
         run: |
           echo "Reconcile run failed; deploying retained/partial outputs from public/."
 
-      - name: Deploy to GitHub Pages
+      - name: Upload Final Public Artifacts
         if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-final
+          path: |
+            public/index.html
+            public/runs_manifest.json
+            public/runs/**
+          if-no-files-found: warn
+          retention-days: 5
+
+      - name: Deploy to GitHub Pages
+        if: ${{ success() }}
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
