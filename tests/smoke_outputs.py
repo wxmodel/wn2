@@ -55,6 +55,10 @@ def _collect_images(run_dir: Path) -> List[Path]:
     return files
 
 
+def _newest_image_mtime(images: List[Path]) -> float:
+    return max((p.stat().st_mtime for p in images), default=0.0)
+
+
 def _load_manifest_runs(manifest_path: Path) -> List[dict]:
     if not manifest_path.exists():
         return []
@@ -97,10 +101,10 @@ def _pick_run_dir(runs_root: Path, run_images: Dict[str, List[Path]]) -> Tuple[P
         return candidates[best_name], run_images[best_name], "manifest"
 
     newest_name = max(
-        candidates.keys(),
-        key=lambda name: (candidates[name].stat().st_mtime, name),
+        run_images.keys(),
+        key=lambda name: (_newest_image_mtime(run_images[name]), name),
     )
-    return candidates[newest_name], run_images[newest_name], "mtime"
+    return candidates[newest_name], run_images[newest_name], "image_mtime"
 
 
 def _validate_images(images: Iterable[Path], max_dimension: int) -> Tuple[int, int, int]:
