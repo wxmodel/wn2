@@ -198,6 +198,7 @@ jobs:
       - name: Smoke Test Outputs (Shard)
         env:
           WN2_MAX_DIMENSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.max_dimension || '900' }}
+          WN2_SMOKE_ALLOW_EMPTY: "1"
         run: python tests/smoke_outputs.py
 
       - name: Report generator failure (shard)

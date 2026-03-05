@@ -2493,6 +2493,15 @@ def annotate_map_file(out_file, product_key, hour, map_region=None, low_center=N
             max_width=max_text_w,
         )
         draw.text((12, img.height + header_h + legend_h + 4), footer_text, fill=(28, 28, 28), font=footer_font)
+        if max_dimension_px is not None:
+            longest_side = max(canvas.width, canvas.height)
+            if longest_side > int(max_dimension_px):
+                resize_scale = float(max_dimension_px) / float(longest_side)
+                target_w = max(100, int(round(canvas.width * resize_scale)))
+                target_h = max(100, int(round(canvas.height * resize_scale)))
+                resampling = getattr(Image, 'Resampling', None)
+                lanczos = getattr(resampling, 'LANCZOS', getattr(Image, 'LANCZOS', Image.BICUBIC))
+                canvas = canvas.resize((target_w, target_h), lanczos)
         canvas.save(out_file, format='JPEG', quality=97, subsampling=0)
 
 

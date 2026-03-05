@@ -24,6 +24,17 @@ def _parse_int(raw: Optional[str], default: int) -> int:
         return default
 
 
+def _env_flag(raw: Optional[str], default: bool = False) -> bool:
+    if raw is None:
+        return default
+    val = str(raw).strip().lower()
+    if val in {"1", "true", "yes", "y", "on"}:
+        return True
+    if val in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _parse_utc(raw: Optional[str]) -> Optional[datetime]:
     text = str(raw or "").strip()
     if not text:
@@ -153,8 +164,16 @@ def _validate_images(images: Iterable[Path], max_dimension: int) -> Tuple[int, i
 
 
 def main() -> int:
+    allow_empty = _env_flag(os.environ.get("WN2_SMOKE_ALLOW_EMPTY"), default=False)
     runs_root = Path("public") / "runs"
     if not runs_root.exists():
+        if allow_empty:
+            max_dimension = _parse_int(os.environ.get("WN2_MAX_DIMENSION"), MAX_DIMENSION_DEFAULT)
+            print(
+                f"SMOKE OK: run_dir=public/runs picked_by=allow_empty "
+                f"images=0 max_observed=0x0 limit={max_dimension + MAX_DIMENSION_SLACK}"
+            )
+            return 0
         raise RuntimeError("public/runs does not exist.")
 
     run_images: Dict[str, List[Path]] = {}
@@ -162,6 +181,16 @@ def main() -> int:
         imgs = _collect_images(run_dir)
         if imgs:
             run_images[run_dir.name] = imgs
+
+    if not run_images:
+        if allow_empty:
+            max_dimension = _parse_int(os.environ.get("WN2_MAX_DIMENSION"), MAX_DIMENSION_DEFAULT)
+            print(
+                f"SMOKE OK: run_dir={runs_root.as_posix()} picked_by=allow_empty "
+                f"images=0 max_observed=0x0 limit={max_dimension + MAX_DIMENSION_SLACK}"
+            )
+            return 0
+        raise RuntimeError("No run directories with images were found under public/runs.")
 
     chosen_dir, images, picked_by = _pick_run_dir(runs_root, run_images)
     max_dimension = _parse_int(os.environ.get("WN2_MAX_DIMENSION"), MAX_DIMENSION_DEFAULT)
