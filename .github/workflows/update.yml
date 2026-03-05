@@ -266,11 +266,24 @@ jobs:
       - name: Merge Shard Frames
         run: |
           mkdir -p public/runs
+          merged=0
           if [ -d .shards/public/runs ]; then
             cp -R .shards/public/runs/. public/runs/
+            merged=1
           fi
           if [ -d .shards/runs ]; then
             cp -R .shards/runs/. public/runs/
+            merged=1
+          fi
+          shopt -s nullglob
+          for run_dir in .shards/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]; do
+            if [ -d "$run_dir" ]; then
+              cp -R "$run_dir" public/runs/
+              merged=1
+            fi
+          done
+          if [ "$merged" -eq 0 ]; then
+            echo "No shard run directories found after artifact download."
           fi
 
       - name: Run Map Generator (Resume + Reconcile)
